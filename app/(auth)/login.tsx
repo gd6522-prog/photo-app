@@ -1,5 +1,6 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +16,8 @@ import {
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
+const KEY_AUTO_LOGIN = "hx_auto_login";
+
 // 한국 전화번호 -> E.164 (+82...)
 function toE164KR(raw: string): string | null {
   const s = raw.replace(/[^\d+]/g, "");
@@ -28,10 +31,27 @@ function toE164KR(raw: string): string | null {
   return `+82${digits.slice(1)}`;
 }
 
-// pseudo email (signup.tsx랑 동일 규칙 유지)
-function pseudoEmailFromPhoneE164(e164: string) {
+// ✅ 구버전 호환: phoneToEmail
+function phoneToEmail(e164: string) {
   const digits = e164.replace(/\D/g, "");
-  return `u${digits}@example.com`;
+  return `p_${digits}@phone.local`;
+}
+
+function isSessionMissingPopup(title?: string, message?: string) {
+  const t = (title ?? "").toLowerCase();
+  const m = (message ?? "").toLowerCase();
+  return (
+    t.includes("로그인 필요") ||
+    m.includes("세션이 없습니다") ||
+    m.includes("로그인 후 다시") ||
+    t.includes("login required") ||
+    (m.includes("session") && m.includes("login"))
+  );
+}
+
+function isInvalidCreds(err: any) {
+  const msg = String(err?.message ?? "").toLowerCase();
+  return msg.includes("invalid login credentials") || msg.includes("invalid credentials");
 }
 
 export default function LoginScreen() {
@@ -42,43 +62,104 @@ export default function LoginScreen() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const [autoLogin, setAutoLogin] = useState(true);
+
+  const originalAlertRef = useRef<typeof Alert.alert | null>(null);
+
+  useEffect(() => {
+    // ✅ 로그인 화면에 있는 동안만 "세션 없음" 팝업 차단
+    if (!originalAlertRef.current) originalAlertRef.current = Alert.alert;
+    const original = originalAlertRef.current;
+
+    // @ts-ignore
+    Alert.alert = (title: any, message?: any, buttons?: any, options?: any) => {
+      try {
+        if (isSessionMissingPopup(String(title ?? ""), String(message ?? ""))) {
+          return;
+        }
+      } catch {}
+      return (original as any)(title, message, buttons, options);
+    };
+
+    return () => {
+      if (originalAlertRef.current) {
+        // @ts-ignore
+        Alert.alert = originalAlertRef.current;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await AsyncStorage.getItem(KEY_AUTO_LOGIN);
+        if (v === "0") setAutoLogin(false);
+      } catch {}
+    })();
+  }, []);
+
   const e164 = useMemo(() => toE164KR(phone.trim()), [phone]);
 
   const canSubmit = useMemo(() => {
-    return !!e164 && password.length >= 6;
+    return !!e164 && password.trim().length >= 6;
   }, [e164, password]);
+
+  const toggleAutoLogin = async () => {
+    const next = !autoLogin;
+    setAutoLogin(next);
+    try {
+      await AsyncStorage.setItem(KEY_AUTO_LOGIN, next ? "1" : "0");
+    } catch {}
+  };
 
   const onLogin = async () => {
     if (!canSubmit || loading) return;
     setLoading(true);
 
     try {
-      const email = pseudoEmailFromPhoneE164(e164!);
+      const pw = password.trim();
 
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      // 1) ✅ phone 로그인 먼저 시도
+      let data: any = null;
+      let err: any = null;
+
+      const r1 = await supabase.auth.signInWithPassword({
+        phone: e164!,
+        password: pw,
       });
+      data = r1.data;
+      err = r1.error;
 
-      if (error) throw error;
+      // 2) ❌ phone에서 invalid credentials면 구버전 email로 fallback
+      if (err && isInvalidCreds(err)) {
+        const email = phoneToEmail(e164!);
+        const r2 = await supabase.auth.signInWithPassword({
+          email,
+          password: pw,
+        });
+        data = r2.data;
+        err = r2.error;
+      }
+
+      if (err) throw err;
       if (!data?.user) throw new Error("로그인 세션 생성 실패");
 
-      // ✅ 승인 체크: profiles.approved = true 아니면 막기
+      // 승인 체크
       const { data: prof, error: pErr } = await supabase
         .from("profiles")
-        .select("approved, is_admin, name, work_part")
+        .select("approval_status")
         .eq("id", data.user.id)
         .single();
 
       if (pErr) throw pErr;
 
-      if (!prof?.approved) {
+      if (prof?.approval_status !== "approved") {
         await supabase.auth.signOut();
         Alert.alert("승인 대기", "관리자 승인 후 로그인할 수 있습니다.");
         return;
       }
 
-      router.replace("/(tabs)");
+      // ✅ 이동은 AuthGate가 담당
     } catch (err: any) {
       Alert.alert("로그인 실패", err?.message ?? String(err));
     } finally {
@@ -88,10 +169,19 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 26, paddingBottom: 28, flexGrow: 1 }}
+          contentContainerStyle={{
+            paddingHorizontal: 18,
+            paddingTop: 26,
+            paddingBottom: 28,
+            flexGrow: 1,
+            justifyContent: "center",
+          }}
         >
           <View style={{ alignItems: "center", marginBottom: 18 }}>
             <Image
@@ -117,7 +207,9 @@ export default function LoginScreen() {
               elevation: 2,
             }}
           >
-            <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>로그인</Text>
+            <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>
+              로그인
+            </Text>
 
             <View style={{ gap: 6 }}>
               <Text style={{ color: "#374151", fontWeight: "800" }}>전화번호</Text>
@@ -167,11 +259,39 @@ export default function LoginScreen() {
                   editable={!loading}
                   style={{ flex: 1, paddingVertical: 12, color: "#111827" }}
                 />
-                <Pressable onPress={() => setShowPw((v) => !v)} style={{ paddingLeft: 10, paddingVertical: 10 }} disabled={loading}>
-                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>{showPw ? "숨김" : "표시"}</Text>
+                <Pressable
+                  onPress={() => setShowPw((v) => !v)}
+                  style={{ paddingLeft: 10, paddingVertical: 10 }}
+                  disabled={loading}
+                >
+                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>
+                    {showPw ? "숨김" : "표시"}
+                  </Text>
                 </Pressable>
               </View>
             </View>
+
+            <Pressable
+              onPress={toggleAutoLogin}
+              disabled={loading}
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 2 }}
+            >
+              <View
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 6,
+                  borderWidth: 2,
+                  borderColor: autoLogin ? "#2563EB" : "#CBD5E1",
+                  backgroundColor: autoLogin ? "#2563EB" : "#FFFFFF",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {autoLogin ? <Text style={{ color: "#fff", fontWeight: "900" }}>✓</Text> : null}
+              </View>
+              <Text style={{ color: "#111827", fontWeight: "900" }}>자동로그인</Text>
+            </Pressable>
 
             <Pressable
               onPress={onLogin}
@@ -182,6 +302,7 @@ export default function LoginScreen() {
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: !canSubmit || loading ? "#CBD5E1" : "#2563EB",
+                marginTop: 6,
               }}
             >
               {loading ? (
@@ -194,7 +315,11 @@ export default function LoginScreen() {
               )}
             </Pressable>
 
-            <Pressable onPress={() => router.push("/(auth)/signup")} disabled={loading} style={{ alignItems: "center", paddingVertical: 8 }}>
+            <Pressable
+              onPress={() => router.push("/(auth)/signup" as any)}
+              disabled={loading}
+              style={{ alignItems: "center", paddingVertical: 8 }}
+            >
               <Text style={{ color: "#2563EB", fontWeight: "900" }}>회원가입</Text>
             </Pressable>
           </View>

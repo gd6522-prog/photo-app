@@ -1,6 +1,6 @@
 import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -17,33 +17,25 @@ import {
 } from "react-native";
 import { localeFromNationality, setLocale } from "../../src/lib/locale";
 import { supabase } from "../../src/lib/supabase";
+import { getWorkPartOptionsIncludeDriver, Option } from "../../src/lib/workParts";
 
-const WORK_PARTS = [
-  { label: "선택", value: "" },
-  { label: "박스존", value: "박스존" },
-  { label: "이너존", value: "이너존" },
-  { label: "슬라존", value: "슬라존" },
-  { label: "경량존", value: "경량존" },
-  { label: "이형존", value: "이형존" },
-  { label: "담배존", value: "담배존" },
-  { label: "관리자", value: "관리자" },
-  { label: "기사", value: "기사" },
+// ✅ 작업파트: 기존 + 임시직 추가
+const WORK_PARTS: Option[] = [
+  ...getWorkPartOptionsIncludeDriver(),
+  { label: "임시직", value: "임시직" },
 ];
 
-const NATIONALITIES = [
+// ✅ 국적: 지정 6개 + 직접입력
+const NATIONALITIES: Option[] = [
   { label: "대한민국 (KR)", value: "KR" },
-  { label: "미국 (US)", value: "US" },
-  { label: "영국 (UK)", value: "UK" },
-  { label: "일본 (JP)", value: "JP" },
   { label: "중국 (CN)", value: "CN" },
-  { label: "대만 (TW)", value: "TW" },
-  { label: "홍콩 (HK)", value: "HK" },
-  { label: "캐나다 (CA)", value: "CA" },
-  { label: "호주 (AU)", value: "AU" },
-  { label: "기타 (ETC)", value: "ETC" },
+  { label: "러시아 (RU)", value: "RU" },
+  { label: "우즈베키스탄 (UZ)", value: "UZ" },
+  { label: "카자흐스탄 (KZ)", value: "KZ" },
+  { label: "키르키스스탄 (KG)", value: "KG" },
+  { label: "직접입력", value: "CUSTOM" },
 ];
 
-// 한국 전화번호 -> E.164 (+82...)
 function toE164KR(raw: string): string | null {
   const s = raw.replace(/[^\d+]/g, "");
   if (s.startsWith("+")) {
@@ -56,22 +48,24 @@ function toE164KR(raw: string): string | null {
   return `+82${digits.slice(1)}`;
 }
 
-// pseudo email (테스트용 예약 TLD .invalid)
-function pseudoEmailFromPhoneE164(e164: string) {
-  const digits = e164.replace(/\D/g, "");
-  return `u${digits}@phone.invalid`;
+function isValidBirth8(v: string) {
+  if (!/^\d{8}$/.test(v)) return false;
+  const y = Number(v.slice(0, 4));
+  const m = Number(v.slice(4, 6));
+  const d = Number(v.slice(6, 8));
+  if (y < 1900 || y > 2100) return false;
+  if (m < 1 || m > 12) return false;
+
+  const dt = new Date(
+    `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T00:00:00`
+  );
+  if (Number.isNaN(dt.getTime())) return false;
+  return dt.getFullYear() === y && dt.getMonth() + 1 === m && dt.getDate() === d;
 }
 
-// YYYY-MM-DD 검증
-function isValidDateYYYYMMDD(v: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
-  const d = new Date(v + "T00:00:00");
-  if (Number.isNaN(d.getTime())) return false;
-  const [y, m, day] = v.split("-").map(Number);
-  return d.getFullYear() === y && d.getMonth() + 1 === m && d.getDate() === day;
+function birth8ToDash(v: string) {
+  return `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}`;
 }
-
-type Option = { label: string; value: string };
 
 function OneLineSelect({
   label,
@@ -84,12 +78,13 @@ function OneLineSelect({
   label: string;
   value: string;
   placeholder: string;
-  options: Option[];
+  options?: Option[];
   disabled?: boolean;
   onPress: () => void;
 }) {
+  const safeOptions = options ?? [];
   const selectedLabel =
-    options.find((o) => o.value === value)?.label || (value ? value : "");
+    safeOptions.find((o) => o.value === value)?.label || (value ? value : "");
 
   return (
     <View style={{ gap: 6 }}>
@@ -108,12 +103,7 @@ function OneLineSelect({
           opacity: disabled ? 0.6 : 1,
         }}
       >
-        <Text
-          style={{
-            color: selectedLabel ? "#111827" : "#9CA3AF",
-            fontWeight: "800",
-          }}
-        >
+        <Text style={{ color: selectedLabel ? "#111827" : "#9CA3AF", fontWeight: "800" }}>
           {selectedLabel || placeholder}
         </Text>
       </Pressable>
@@ -140,11 +130,7 @@ function PickerModal({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable
         onPress={onClose}
-        style={{
-          flex: 1,
-          backgroundColor: "rgba(0,0,0,0.35)",
-          justifyContent: "flex-end",
-        }}
+        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" }}
       >
         <Pressable
           onPress={() => {}}
@@ -188,122 +174,339 @@ function PickerModal({
 export default function SignupScreen() {
   const router = useRouter();
 
-  const [inviteCode, setInviteCode] = useState("");
-
-  const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPw, setShowPw] = useState(false);
-
   const [name, setName] = useState("");
-  const [birthdate, setBirthdate] = useState(""); // YYYY-MM-DD
+  const [phone, setPhone] = useState("");
+
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [pw2Touched, setPw2Touched] = useState(false);
+
+  const [birth8, setBirth8] = useState("");
+
+  // ✅ nationality = 선택값(KR/CN/.../CUSTOM)
   const [nationality, setNationality] = useState("KR");
+  // ✅ 직접 입력값
+  const [nationalityCustom, setNationalityCustom] = useState("");
 
   const [workPart, setWorkPart] = useState("");
 
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [lockedE164, setLockedE164] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
+  const [checkingPhone, setCheckingPhone] = useState(false);
 
   const [workPartOpen, setWorkPartOpen] = useState(false);
   const [nationOpen, setNationOpen] = useState(false);
 
+  // ✅ 전화번호 사전 확인 상태
+  const [phoneChecked, setPhoneChecked] = useState(false);
+  const [phoneExists, setPhoneExists] = useState<boolean | null>(null); // null=미확인, true=이미있음, false=사용가능
+  const [checkedE164, setCheckedE164] = useState<string | null>(null);
+
   const e164 = useMemo(() => toE164KR(phone.trim()), [phone]);
-  const birthdateOk = useMemo(() => isValidDateYYYYMMDD(birthdate.trim()), [birthdate]);
+  const birthOk = useMemo(() => isValidBirth8(birth8.trim()), [birth8]);
 
-  const isAdmin = useMemo(() => workPart === "관리자", [workPart]);
+  // ✅ 최종 국적(DB 저장용): CUSTOM이면 직접입력값, 아니면 코드
+  const nationalityFinal = useMemo(() => {
+    if (nationality === "CUSTOM") return nationalityCustom.trim();
+    return nationality.trim();
+  }, [nationality, nationalityCustom]);
 
-  const canSubmit = useMemo(() => {
+  // ✅ 직접입력일 때만 국적 유효성 체크
+  const nationalityOk = useMemo(() => {
+    if (nationality !== "CUSTOM") return nationality.trim().length > 0;
+    return nationalityCustom.trim().length >= 2;
+  }, [nationality, nationalityCustom]);
+
+  const passOk = useMemo(() => {
+    const p = password.trim();
+    const p2 = password2.trim();
+    return p.length >= 6 && p === p2;
+  }, [password, password2]);
+
+  const passMismatch = useMemo(() => {
+    const p = password.trim();
+    const p2 = password2.trim();
+    if (!pw2Touched) return false;
+    if (p2.length === 0) return false;
+    if (p.length === 0) return false;
+    return p !== p2;
+  }, [password, password2, pw2Touched]);
+
+  // ✅ 입력 전화번호가 바뀌면 "확인"을 다시 하게 만들기
+  useEffect(() => {
+    setPhoneChecked(false);
+    setPhoneExists(null);
+    setCheckedE164(null);
+  }, [e164]);
+
+  // ✅ 국적이 CUSTOM이 아니면 직접입력칸 초기화
+  useEffect(() => {
+    if (nationality !== "CUSTOM") setNationalityCustom("");
+  }, [nationality]);
+
+  const baseFormOk = useMemo(() => {
     return (
-      inviteCode.trim().length >= 3 &&
-      !!e164 &&
-      password.length >= 6 &&
       name.trim().length >= 2 &&
-      birthdateOk &&
-      nationality.trim().length > 0 &&
+      !!e164 &&
+      passOk &&
+      birthOk &&
+      nationalityOk &&
       workPart.trim().length > 0
     );
-  }, [inviteCode, e164, password, name, birthdateOk, nationality, workPart]);
+  }, [name, e164, passOk, birthOk, nationalityOk, workPart]);
 
-  const onSignup = async () => {
-    if (!canSubmit || loading) return;
+  // ✅ 가입 진행 조건: 기본폼 OK + 전화번호 확인 완료 + (이미가입 아님)
+  const formOk = useMemo(() => {
+    return baseFormOk && phoneChecked && phoneExists === false && checkedE164 === e164;
+  }, [baseFormOk, phoneChecked, phoneExists, checkedE164, e164]);
+
+  const canCheckPhone = !!e164 && !loading && !otpSent && !checkingPhone;
+  const canSendOtp = formOk && !loading && !otpSent;
+  const canVerify = !!lockedE164 && otp.trim().length >= 4 && !loading && otpSent;
+
+  const hardSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+  };
+
+  const resetToNewPhone = async () => {
+    await hardSignOut();
+    setOtp("");
+    setOtpSent(false);
+    setLockedE164(null);
+
+    // 전화번호 확인 상태 초기화
+    setPhoneChecked(false);
+    setPhoneExists(null);
+    setCheckedE164(null);
+  };
+
+  const onCheckPhone = async () => {
+    if (!canCheckPhone) return;
+
+    setCheckingPhone(true);
+    try {
+      if (!e164) throw new Error("전화번호 형식이 올바르지 않습니다.");
+
+      // ✅ RLS 영향 없이 “존재 여부”만 확인 (DB에 만든 RPC 사용)
+      const { data, error } = await supabase.rpc("check_phone_exists", {
+        p_phone: e164,
+      });
+      if (error) throw error;
+
+      const exists = !!data;
+
+      setPhoneChecked(true);
+      setPhoneExists(exists);
+      setCheckedE164(e164);
+
+      if (exists) {
+        Alert.alert(
+          "이미 가입된 전화번호",
+          "이 번호는 이미 가입되어 있어요. 로그인할까요? 아니면 다른 번호로 다시 만들까요?",
+          [
+            {
+              text: "로그인",
+              onPress: () => router.replace("/(auth)/login"),
+              style: "default",
+            },
+            {
+              text: "다시 만들기",
+              onPress: () => {
+                resetToNewPhone();
+              },
+              style: "destructive",
+            },
+            { text: "취소", style: "cancel" },
+          ]
+        );
+      } else {
+        Alert.alert("확인 완료", "가입 가능한 전화번호입니다. 계속 진행하세요.");
+      }
+    } catch (err: any) {
+      setPhoneChecked(false);
+      setPhoneExists(null);
+      setCheckedE164(null);
+      Alert.alert("확인 실패", err?.message ?? JSON.stringify(err));
+    } finally {
+      setCheckingPhone(false);
+    }
+  };
+
+  const onSendOtp = async () => {
+    if (!canSendOtp) return;
 
     setLoading(true);
     try {
-      // 1) 초대코드 검증 + 1회 사용 처리
-      const { data: ok, error: codeErr } = await supabase.rpc("consume_invite_code", {
-        p_code: inviteCode.trim(),
-      });
-      if (codeErr) throw codeErr;
-      if (!ok) {
-        Alert.alert("실패", "초대코드가 올바르지 않거나 사용이 제한되었습니다.");
-        return;
+      if (!e164) throw new Error("전화번호 형식이 올바르지 않습니다.");
+      if (!phoneChecked || phoneExists !== false || checkedE164 !== e164) {
+        throw new Error("전화번호 확인을 먼저 진행해주세요.");
+      }
+      if (!nationalityOk) {
+        throw new Error("국적을 입력/선택해주세요.");
       }
 
-      // 2) 전화번호를 pseudo email로 회원가입
-      const pseudoEmail = pseudoEmailFromPhoneE164(e164!);
-      const lang = localeFromNationality(nationality);
+      // ✅ locale: KR이면 KR, 나머지는 ETC로 fallback
+      const lang = localeFromNationality(nationality === "KR" ? "KR" : "ETC");
+      const birthdateDashed = birth8ToDash(birth8.trim());
 
-      const { data: signData, error: signErr } = await supabase.auth.signUp({
-        email: pseudoEmail,
-        password,
+      const { error } = await supabase.auth.signInWithOtp({
+        phone: e164,
         options: {
           data: {
             name: name.trim(),
             work_part: workPart.trim(),
-            phone: e164!,
+            phone: e164,
             phone_verified: false,
-            birthdate: birthdate.trim(),
-            nationality: nationality.trim(),
+            birthdate: birthdateDashed,
+            nationality: nationalityFinal,
             language: lang,
-            is_admin: isAdmin, // 관리자 “운영권한”
           },
         },
       });
 
-      if (signErr) throw signErr;
+      if (error) throw error;
 
-      const userId = signData?.user?.id;
-      if (!userId) {
-        throw new Error("회원가입은 됐는데 user id를 못 받았어요. (Auth 설정 확인 필요)");
-      }
-
-      // 3) profiles 생성 (RLS 정책으로 본인만 insert 가능)
-      const { error: profErr } = await supabase.from("profiles").insert({
-        id: userId,
-        phone: e164!,
-        phone_verified: false,
-        birthdate: birthdate.trim(),
-        nationality: nationality.trim(),
-        language: lang,
-        name: name.trim(),
-        work_part: workPart.trim(),
-        is_admin: isAdmin,
-        approved: false, // ✅ 기본: 승인대기
-      });
-
-      if (profErr) throw profErr;
-
-      // 4) 앱 언어 저장/적용
-      await setLocale(lang);
-
-      Alert.alert("회원가입 완료", "승인 대기 상태입니다. 승인되면 로그인 가능합니다.");
-      router.replace("/(auth)/login");
+      setLockedE164(e164);
+      setOtpSent(true);
+      Alert.alert("인증번호 발송", "문자로 인증번호가 발송되었습니다.");
     } catch (err: any) {
-      const msg =
-        err?.message ||
-        err?.error_description ||
-        err?.details ||
-        JSON.stringify(err);
-      Alert.alert("회원가입 실패", msg);
+      setLockedE164(null);
+      setOtpSent(false);
+      setOtp("");
+      Alert.alert("발송 실패", err?.message ?? JSON.stringify(err));
     } finally {
       setLoading(false);
     }
   };
+
+  const onVerify = async () => {
+    if (!canVerify) return;
+
+    setLoading(true);
+    try {
+      const e164Fixed = lockedE164!;
+      if (!nationalityOk) throw new Error("국적을 입력/선택해주세요.");
+
+      const lang = localeFromNationality(nationality === "KR" ? "KR" : "ETC");
+      const birthdateDashed = birth8ToDash(birth8.trim());
+
+      const { data: otpData, error: otpErr } = await supabase.auth.verifyOtp({
+        phone: e164Fixed,
+        token: otp.trim(),
+        type: "sms",
+      });
+      if (otpErr) throw otpErr;
+
+      const userId = otpData?.user?.id;
+      if (!userId) throw new Error("OTP 인증은 됐는데 user id를 못 받았어요.");
+
+      if (otpData?.session) {
+        const { error: sessErr } = await supabase.auth.setSession({
+          access_token: otpData.session.access_token,
+          refresh_token: otpData.session.refresh_token,
+        });
+        if (sessErr) throw sessErr;
+      }
+
+      // ✅ 비밀번호 설정 + 메타데이터 저장
+      const { error: upErr } = await supabase.auth.updateUser({
+        password: password.trim(),
+        data: {
+          name: name.trim(),
+          work_part: workPart.trim(),
+          phone: e164Fixed,
+          phone_verified: true,
+          birthdate: birthdateDashed,
+          nationality: nationalityFinal,
+          language: lang,
+        },
+      });
+
+      // ✅ 이미 같은 비번이 설정된 “기존 계정”이면 안내하고 로그인 유도
+      if (upErr) {
+        const msg = String(upErr?.message ?? "");
+        if (msg.toLowerCase().includes("new password should be different")) {
+          await hardSignOut();
+          Alert.alert(
+            "이미 가입된 번호",
+            "이 번호는 이미 가입되어 있어요. 비밀번호로 로그인해주세요.",
+            [
+              { text: "로그인", onPress: () => router.replace("/(auth)/login") },
+              { text: "확인", style: "cancel" },
+            ]
+          );
+          return;
+        }
+        throw upErr;
+      }
+
+      const { error: profErr } = await supabase
+        .from("profiles")
+        .upsert(
+          {
+            id: userId,
+            phone: e164Fixed,
+            name: name.trim(),
+            work_part: workPart.trim(),
+            birthdate: birthdateDashed,
+            nationality: nationalityFinal,
+            language: lang,
+            phone_verified: true,
+          },
+          { onConflict: "id" }
+        );
+
+      if (profErr) throw profErr;
+
+      await setLocale(lang);
+
+      // ✅ (중요) 라우팅보다 먼저 세션 정리
+      await hardSignOut();
+
+      // ✅ (중요) 즉시 로그인 화면으로 “단독 이동” (AuthGate 경합 방지)
+      router.replace("/(auth)/login");
+      queueMicrotask(() => router.replace("/(auth)/login"));
+
+      // ✅ Alert는 라우팅 이후에 띄우기
+      setTimeout(() => {
+        Alert.alert("가입 완료", "승인 대기 상태입니다. 승인되면 로그인 가능합니다.");
+      }, 50);
+    } catch (err: any) {
+      await hardSignOut();
+      Alert.alert("가입 실패", err?.message ?? JSON.stringify(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onResetPhone = async () => {
+    await resetToNewPhone();
+  };
+
+  const phoneStatusText = useMemo(() => {
+    if (!e164) return null;
+    if (!phoneChecked || checkedE164 !== e164) return { text: "전화번호 확인이 필요합니다.", color: "#9CA3AF" };
+    if (phoneExists === true) return { text: "이미 가입된 전화번호입니다.", color: "#EF4444" };
+    if (phoneExists === false) return { text: "사용 가능한 전화번호입니다.", color: "#16A34A" };
+    return null;
+  }, [e164, phoneChecked, phoneExists, checkedE164]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 18, paddingBottom: 28, flexGrow: 1 }}
+          contentContainerStyle={{
+            paddingHorizontal: 18,
+            paddingTop: 18,
+            paddingBottom: 28,
+            flexGrow: 1,
+          }}
         >
           <View style={{ alignItems: "center", marginBottom: 14 }}>
             <Image
@@ -311,7 +514,7 @@ export default function SignupScreen() {
               style={{ width: 240, height: 70, resizeMode: "contain" }}
             />
             <Text style={{ marginTop: 8, color: "#6B7280", textAlign: "center" }}>
-              초대코드로만 가입할 수 있어요. 가입 후 승인되면 전화번호+비밀번호로 로그인합니다.
+              가입 시 1회 문자 인증 후, 전화번호+비밀번호로 로그인합니다.
             </Text>
           </View>
 
@@ -331,86 +534,6 @@ export default function SignupScreen() {
           >
             <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>회원가입</Text>
 
-            {/* 1. 초대코드 */}
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>초대코드</Text>
-              <TextInput
-                value={inviteCode}
-                onChangeText={setInviteCode}
-                placeholder="예: HAN2026"
-                placeholderTextColor="#9CA3AF"
-                autoCapitalize="characters"
-                editable={!loading}
-                style={{
-                  backgroundColor: "#F9FAFB",
-                  borderWidth: 1,
-                  borderColor: "#E5E7EB",
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
-                  color: "#111827",
-                }}
-              />
-            </View>
-
-            {/* 2. 전화번호 */}
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>전화번호</Text>
-              <TextInput
-                value={phone}
-                onChangeText={setPhone}
-                placeholder="01012345678"
-                placeholderTextColor="#9CA3AF"
-                keyboardType="phone-pad"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!loading}
-                style={{
-                  backgroundColor: "#F9FAFB",
-                  borderWidth: 1,
-                  borderColor: "#E5E7EB",
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
-                  color: "#111827",
-                }}
-              />
-              <Text style={{ color: "#9CA3AF", fontSize: 12 }}>하이픈 없이 입력해도 됩니다.</Text>
-            </View>
-
-            {/* 3. 비밀번호 */}
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>비밀번호</Text>
-              <View
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  backgroundColor: "#F9FAFB",
-                  borderWidth: 1,
-                  borderColor: "#E5E7EB",
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                }}
-              >
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="6자 이상"
-                  placeholderTextColor="#9CA3AF"
-                  secureTextEntry={!showPw}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  editable={!loading}
-                  style={{ flex: 1, paddingVertical: 12, color: "#111827" }}
-                />
-                <Pressable onPress={() => setShowPw((v) => !v)} style={{ paddingLeft: 10, paddingVertical: 10 }} disabled={loading}>
-                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>{showPw ? "숨김" : "표시"}</Text>
-                </Pressable>
-              </View>
-              <Text style={{ color: "#9CA3AF" }}>비밀번호는 6자 이상</Text>
-            </View>
-
-            {/* 4. 이름 */}
             <View style={{ gap: 6 }}>
               <Text style={{ color: "#374151", fontWeight: "800" }}>이름</Text>
               <TextInput
@@ -418,7 +541,7 @@ export default function SignupScreen() {
                 onChangeText={setName}
                 placeholder="홍길동"
                 placeholderTextColor="#9CA3AF"
-                editable={!loading}
+                editable={!loading && !otpSent}
                 style={{
                   backgroundColor: "#F9FAFB",
                   borderWidth: 1,
@@ -431,92 +554,261 @@ export default function SignupScreen() {
               />
             </View>
 
-            {/* 5. 생년월일 */}
+            {/* ✅ 전화번호 + 확인 버튼 */}
             <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>생년월일</Text>
+              <Text style={{ color: "#374151", fontWeight: "800" }}>전화번호</Text>
+
+              <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
+                <View style={{ flex: 1 }}>
+                  <TextInput
+                    value={phone}
+                    onChangeText={setPhone}
+                    placeholder="01012345678"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!loading && !otpSent && !checkingPhone}
+                    style={{
+                      backgroundColor: "#F9FAFB",
+                      borderWidth: 1,
+                      borderColor: e164 || phone.length === 0 ? "#E5E7EB" : "#EF4444",
+                      borderRadius: 12,
+                      paddingHorizontal: 12,
+                      paddingVertical: 12,
+                      color: "#111827",
+                    }}
+                  />
+                </View>
+
+                <Pressable
+                  onPress={onCheckPhone}
+                  disabled={!canCheckPhone}
+                  style={{
+                    height: 46,
+                    paddingHorizontal: 12,
+                    borderRadius: 12,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: !canCheckPhone ? "#CBD5E1" : "#111827",
+                    minWidth: 96,
+                  }}
+                >
+                  {checkingPhone ? (
+                    <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                      <ActivityIndicator color="#fff" />
+                      <Text style={{ color: "#fff", fontWeight: "900" }}>확인중</Text>
+                    </View>
+                  ) : (
+                    <Text style={{ color: "#fff", fontWeight: "900" }}>
+                      {phoneChecked && checkedE164 === e164 && phoneExists === false ? "확인됨" : "확인"}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+
+              {phoneStatusText ? (
+                <Text style={{ color: phoneStatusText.color, fontSize: 12, fontWeight: "700" }}>
+                  {phoneStatusText.text}
+                </Text>
+              ) : null}
+            </View>
+
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: "#374151", fontWeight: "800" }}>비밀번호</Text>
               <TextInput
-                value={birthdate}
-                onChangeText={setBirthdate}
-                placeholder="YYYY-MM-DD (예: 1995-08-21)"
+                value={password}
+                onChangeText={setPassword}
+                placeholder="6자 이상"
                 placeholderTextColor="#9CA3AF"
-                keyboardType="numbers-and-punctuation"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!loading}
+                secureTextEntry
+                editable={!loading && !otpSent}
                 style={{
                   backgroundColor: "#F9FAFB",
                   borderWidth: 1,
-                  borderColor: birthdate.length === 0 || birthdateOk ? "#E5E7EB" : "#EF4444",
+                  borderColor: "#E5E7EB",
                   borderRadius: 12,
                   paddingHorizontal: 12,
                   paddingVertical: 12,
                   color: "#111827",
                 }}
               />
-              <Text style={{ color: birthdate.length === 0 || birthdateOk ? "#9CA3AF" : "#EF4444", fontSize: 12 }}>
-                {birthdate.length === 0
-                  ? "형식: YYYY-MM-DD"
-                  : birthdateOk
-                  ? "OK"
-                  : "날짜 형식이 올바르지 않아요 (예: 1999-12-31)"}
-              </Text>
             </View>
 
-            {/* 6. 국적 */}
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: "#374151", fontWeight: "800" }}>비밀번호 확인</Text>
+              <TextInput
+                value={password2}
+                onChangeText={(t) => {
+                  setPassword2(t);
+                  if (!pw2Touched) setPw2Touched(true);
+                }}
+                onBlur={() => setPw2Touched(true)}
+                placeholder="비밀번호 다시 입력"
+                placeholderTextColor="#9CA3AF"
+                secureTextEntry
+                editable={!loading && !otpSent}
+                style={{
+                  backgroundColor: "#F9FAFB",
+                  borderWidth: 1,
+                  borderColor: passMismatch ? "#EF4444" : "#E5E7EB",
+                  borderRadius: 12,
+                  paddingHorizontal: 12,
+                  paddingVertical: 12,
+                  color: "#111827",
+                }}
+              />
+              {passMismatch ? (
+                <Text style={{ color: "#EF4444", fontSize: 12, fontWeight: "700" }}>비밀번호가 다릅니다.</Text>
+              ) : null}
+            </View>
+
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: "#374151", fontWeight: "800" }}>생년월일</Text>
+              <TextInput
+                value={birth8}
+                onChangeText={(t) => setBirth8(t.replace(/\D/g, "").slice(0, 8))}
+                placeholder="YYYYMMDD (예: 19950821)"
+                placeholderTextColor="#9CA3AF"
+                keyboardType="number-pad"
+                editable={!loading && !otpSent}
+                style={{
+                  backgroundColor: "#F9FAFB",
+                  borderWidth: 1,
+                  borderColor: birth8.length === 0 || birthOk ? "#E5E7EB" : "#EF4444",
+                  borderRadius: 12,
+                  paddingHorizontal: 12,
+                  paddingVertical: 12,
+                  color: "#111827",
+                }}
+              />
+            </View>
+
             <OneLineSelect
               label="국적"
               value={nationality}
               placeholder="선택"
               options={NATIONALITIES}
-              disabled={loading}
+              disabled={loading || otpSent}
               onPress={() => setNationOpen(true)}
             />
-            <Text style={{ color: "#9CA3AF", fontSize: 12 }}>
-              국적 선택에 따라 앱 언어가 자동 설정됩니다.
-            </Text>
 
-            {/* 7. 작업파트 */}
+            {nationality === "CUSTOM" ? (
+              <View style={{ gap: 6 }}>
+                <Text style={{ color: "#374151", fontWeight: "800" }}>국적 직접입력</Text>
+                <TextInput
+                  value={nationalityCustom}
+                  onChangeText={setNationalityCustom}
+                  placeholder="예: 베트남 / 몽골 / 태국"
+                  placeholderTextColor="#9CA3AF"
+                  editable={!loading && !otpSent}
+                  style={{
+                    backgroundColor: "#F9FAFB",
+                    borderWidth: 1,
+                    borderColor: nationalityOk ? "#E5E7EB" : "#EF4444",
+                    borderRadius: 12,
+                    paddingHorizontal: 12,
+                    paddingVertical: 12,
+                    color: "#111827",
+                  }}
+                />
+                {!nationalityOk ? (
+                  <Text style={{ color: "#EF4444", fontSize: 12, fontWeight: "700" }}>
+                    국적을 2글자 이상 입력해주세요.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
             <OneLineSelect
               label="작업파트"
               value={workPart}
               placeholder="선택"
               options={WORK_PARTS}
-              disabled={loading}
+              disabled={loading || otpSent}
               onPress={() => setWorkPartOpen(true)}
             />
-            {isAdmin && (
-              <Text style={{ color: "#2563EB", fontSize: 12, fontWeight: "900" }}>
-                관리자 선택됨 → 운영(조회) 권한 플래그가 설정됩니다. (승인은 별도)
-              </Text>
+
+            {!otpSent ? (
+              <Pressable
+                onPress={onSendOtp}
+                disabled={!canSendOtp}
+                style={{
+                  height: 46,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: !canSendOtp ? "#CBD5E1" : "#2563EB",
+                }}
+              >
+                {loading ? (
+                  <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중</Text>
+                  </View>
+                ) : (
+                  <Text style={{ color: "#fff", fontWeight: "900" }}>인증번호 받기</Text>
+                )}
+              </Pressable>
+            ) : (
+              <>
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: "#374151", fontWeight: "800" }}>인증번호</Text>
+                  <TextInput
+                    value={otp}
+                    onChangeText={(t) => setOtp(t.replace(/\D/g, "").slice(0, 8))}
+                    placeholder="문자로 받은 인증번호"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="number-pad"
+                    editable={!loading}
+                    style={{
+                      backgroundColor: "#F9FAFB",
+                      borderWidth: 1,
+                      borderColor: "#E5E7EB",
+                      borderRadius: 12,
+                      paddingHorizontal: 12,
+                      paddingVertical: 12,
+                      color: "#111827",
+                    }}
+                  />
+                </View>
+
+                <Pressable
+                  onPress={onVerify}
+                  disabled={!canVerify}
+                  style={{
+                    height: 46,
+                    borderRadius: 12,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: !canVerify ? "#CBD5E1" : "#16A34A",
+                  }}
+                >
+                  {loading ? (
+                    <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
+                      <ActivityIndicator color="#fff" />
+                      <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중</Text>
+                    </View>
+                  ) : (
+                    <Text style={{ color: "#fff", fontWeight: "900" }}>인증 완료하고 가입</Text>
+                  )}
+                </Pressable>
+
+                <Pressable onPress={onResetPhone} disabled={loading} style={{ alignItems: "center", paddingVertical: 6 }}>
+                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>전화번호 다시 입력</Text>
+                </Pressable>
+              </>
             )}
 
             <Pressable
-              onPress={onSignup}
-              disabled={!canSubmit || loading}
-              style={{
-                height: 46,
-                borderRadius: 12,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: !canSubmit || loading ? "#CBD5E1" : "#2563EB",
-              }}
+              onPress={() => router.replace("/(auth)/login")}
+              disabled={loading}
+              style={{ alignItems: "center", paddingVertical: 8 }}
             >
-              {loading ? (
-                <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
-                  <ActivityIndicator color="#fff" />
-                  <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중</Text>
-                </View>
-              ) : (
-                <Text style={{ color: "#fff", fontWeight: "900" }}>회원가입</Text>
-              )}
-            </Pressable>
-
-            <Pressable onPress={() => router.replace("/(auth)/login")} disabled={loading} style={{ alignItems: "center", paddingVertical: 8 }}>
               <Text style={{ color: "#2563EB", fontWeight: "900" }}>로그인으로 돌아가기</Text>
             </Pressable>
           </View>
 
-          {/* 모달들 */}
           <PickerModal
             visible={nationOpen}
             title="국적 선택"
