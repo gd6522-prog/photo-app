@@ -1,3 +1,4 @@
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -6,6 +7,7 @@ import {
   FlatList,
   Image,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -16,19 +18,17 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  KeyboardAvoidingView,
 } from "react-native";
 import { Calendar } from "react-native-calendars";
 import { supabase } from "../../src/lib/supabase";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 // ✅ 반드시 legacy로! (expo-file-system import 금지)
 import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 
 // ✅ 안전영역/탭바 겹침 방지
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const THEME = {
   bg: "#F7F7F8",
@@ -46,7 +46,22 @@ const THEME = {
   dangerSoft: "#FEF2F2",
   success: "#16A34A",
   successSoft: "#ECFDF5",
+  amber: "#F59E0B",
+  purple: "#7C3AED",
 };
+
+type DriverCategory = "bottle" | "tobacco" | "miochul";
+
+function categoryLabel(c: DriverCategory) {
+  if (c === "bottle") return "공병";
+  if (c === "tobacco") return "담배";
+  return "미오출";
+}
+function categoryColor(c: DriverCategory) {
+  if (c === "bottle") return THEME.blue;
+  if (c === "tobacco") return THEME.amber;
+  return THEME.purple;
+}
 
 type StoreMapRow = {
   store_code: string;
@@ -64,6 +79,11 @@ type PhotoRow = {
   original_url: string;
   store_code: string;
   work_part?: string | null;
+
+  // ✅ 기사 분류/미오출 정보(있을 수도 / 없을 수도)
+  category?: string | null;
+  delivery_planned_date?: string | null;
+  extra_note?: string | null;
 };
 
 type SelectedStore = {
@@ -175,6 +195,12 @@ export default function PhotoListScreen() {
   const [adminSeeAll, setAdminSeeAll] = useState(false);
 
   const [myWorkPart, setMyWorkPart] = useState<string>("");
+
+  // ✅ 기사면 강제로 “내것만” + 기사 카테고리 탭으로
+  const [isDriver, setIsDriver] = useState(false);
+  const [driverCategory, setDriverCategory] = useState<DriverCategory>("bottle");
+
+  // 기존 토글 (기사일 때는 숨김/무시)
   const [onlyMine, setOnlyMine] = useState(false);
 
   const [dateStr, setDateStr] = useState(kstNowDateString());
@@ -182,7 +208,8 @@ export default function PhotoListScreen() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(firstOfMonth(dateStr));
 
-  // ✅ 검색 입력 / 검수점포 선택을 분리 (원래 코드에서 같은 state로 섞여 UI가 꼬였음)
+  // ✅ 검색 입력 / 검수점포 선택
+  // 기사 모드에서는 검색 기능을 안 쓰므로 UI에서 숨김(데이터는 유지)
   const [searchText, setSearchText] = useState("");
   const [selectedStore, setSelectedStore] = useState<SelectedStore>(null);
 
@@ -230,12 +257,26 @@ export default function PhotoListScreen() {
       setIsAdmin(false);
       setAdminSeeAll(false);
       setMyWorkPart("");
+      setIsDriver(false);
       return;
     }
 
+    const wp = String(data?.work_part ?? "").trim();
+    const driver = wp.includes("기사");
+
     setIsAdmin(!!data?.is_admin);
     setAdminSeeAll(false);
-    setMyWorkPart((data?.work_part ?? "").trim());
+    setMyWorkPart(wp);
+    setIsDriver(driver);
+
+    // ✅ 기사면 이 조회 화면에서는 “내것만 + 기사 3종만” 컨셉 강제
+    if (driver) {
+      setOnlyMine(true);
+      setSelectedStore(null);
+      setSearchText("");
+    } else {
+      setOnlyMine(false);
+    }
   };
 
   useEffect(() => {
@@ -304,49 +345,58 @@ export default function PhotoListScreen() {
 
       let q = supabase
         .from("photos")
-        .select("id, user_id, created_at, status, original_path, original_url, store_code, work_part")
+        .select(
+          "id, user_id, created_at, status, original_path, original_url, store_code, work_part, category, delivery_planned_date, extra_note"
+        )
         .gte("created_at", startUTC)
         .lt("created_at", endUTC)
         .order("created_at", { ascending: false });
 
-      // ✅ 1) 검수점포 선택이 있으면 store_code로 강제 필터
-      if (selectedStore?.store_code) {
-        q = q.eq("store_code", selectedStore.store_code);
+      // ✅ 기사 모드: 검색 기능 없음 / 본인만 / 기사 3종만 / 카테고리 탭 필터
+      if (isDriver) {
+        q = q.eq("user_id", session.user.id);
+        q = (q as any).in("category", ["bottle", "tobacco", "miochul"]);
+        q = (q as any).eq("category", driverCategory);
       } else {
-        // ✅ 2) 없으면 검색 텍스트로 매칭(코드/명)
-        const kwRaw = searchText.trim();
-        if (kwRaw) {
-          const kw = escapeLike(kwRaw);
+        // ✅ 기존: 1) 검수점포 선택이 있으면 store_code 필터
+        if (selectedStore?.store_code) {
+          q = q.eq("store_code", selectedStore.store_code);
+        } else {
+          // ✅ 2) 없으면 검색 텍스트로 매칭(코드/명)
+          const kwRaw = searchText.trim();
+          if (kwRaw) {
+            const kw = escapeLike(kwRaw);
 
-          const { data: hits, error: hitErr } = await supabase
-            .from("store_map")
-            .select("store_code")
-            .or(`store_code.ilike.%${kw}%,store_name.ilike.%${kw}%`)
-            .limit(300);
+            const { data: hits, error: hitErr } = await supabase
+              .from("store_map")
+              .select("store_code")
+              .or(`store_code.ilike.%${kw}%,store_name.ilike.%${kw}%`)
+              .limit(300);
 
-          if (hitErr) {
-            q = q.eq("store_code", kwRaw);
-          } else {
-            const codes = Array.from(
-              new Set(((hits ?? []) as any[]).map((r) => String(r.store_code ?? "").trim()).filter(Boolean))
-            );
+            if (hitErr) {
+              q = q.eq("store_code", kwRaw);
+            } else {
+              const codes = Array.from(
+                new Set(((hits ?? []) as any[]).map((r) => String(r.store_code ?? "").trim()).filter(Boolean))
+              );
 
-            if (codes.length === 0) q = q.eq("store_code", "__no_match__");
-            else if (codes.length === 1) q = q.eq("store_code", codes[0]);
-            else q = q.in("store_code", codes);
+              if (codes.length === 0) q = q.eq("store_code", "__no_match__");
+              else if (codes.length === 1) q = q.eq("store_code", codes[0]);
+              else q = q.in("store_code", codes);
+            }
           }
         }
-      }
 
-      // ✅ 권한 필터
-      if (isAdmin && adminSeeAll) {
-        // 전체
-      } else {
-        if (onlyMine) q = q.eq("user_id", session.user.id);
-        else {
-          const wp = (myWorkPart ?? "").trim();
-          if (wp) q = q.eq("work_part", wp);
-          else q = q.eq("user_id", session.user.id);
+        // ✅ 권한 필터(기존)
+        if (isAdmin && adminSeeAll) {
+          // 전체
+        } else {
+          if (onlyMine) q = q.eq("user_id", session.user.id);
+          else {
+            const wp = (myWorkPart ?? "").trim();
+            if (wp) q = q.eq("work_part", wp);
+            else q = q.eq("user_id", session.user.id);
+          }
         }
       }
 
@@ -382,6 +432,15 @@ export default function PhotoListScreen() {
       setLoading(false);
     }
   };
+
+  // ✅ 기사 모드: 탭 바꾸면 즉시 재조회
+  useEffect(() => {
+    if (!isDriver) return;
+    (async () => {
+      await fetchList();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverCategory, isDriver]);
 
   const groupedByStore = useMemo(() => {
     const groups: Record<string, PhotoRow[]> = {};
@@ -503,7 +562,6 @@ export default function PhotoListScreen() {
       const dl = await FileSystem.downloadAsync(url, localUri);
       if (!dl?.uri) throw new Error("다운로드 실패");
 
-      // ✅ 앨범 생성 없이 카메라롤(최근 항목)에만 저장
       await MediaLibrary.createAssetAsync(dl.uri);
 
       Alert.alert("저장 완료", "갤러리에 저장했습니다.");
@@ -532,6 +590,11 @@ export default function PhotoListScreen() {
   };
 
   const filterBadge = useMemo(() => {
+    // ✅ 기사 모드 badge는 간단하게
+    if (isDriver) {
+      return `📅 ${dateStr} · 👤 내 업로드 · 🧾 ${categoryLabel(driverCategory)}`;
+    }
+
     const parts: string[] = [];
     parts.push(`📅 ${dateStr}`);
     if (selectedStore?.store_code) parts.push(`🏪 ${selectedStore.store_code}`);
@@ -540,7 +603,7 @@ export default function PhotoListScreen() {
     else if (onlyMine) parts.push("👤 내것만");
     else if (myWorkPart) parts.push(`👥 ${myWorkPart}`);
     return parts.join(" · ");
-  }, [dateStr, selectedStore, searchText, isAdmin, adminSeeAll, onlyMine, myWorkPart]);
+  }, [dateStr, selectedStore, searchText, isAdmin, adminSeeAll, onlyMine, myWorkPart, isDriver, driverCategory]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -559,8 +622,10 @@ export default function PhotoListScreen() {
           </Pressable>
         </View>
 
-        <Text style={styles.h1}>사진 조회</Text>
-        <Text style={styles.h2}>날짜/검수점포로 조회 후 미리보기 또는 삭제하세요.</Text>
+        <Text style={styles.h1}>{isDriver ? "기사 사진 조회" : "사진 조회"}</Text>
+        <Text style={styles.h2}>
+          {isDriver ? "날짜 + 공병/담배/미오출 탭으로 내 업로드만 조회합니다." : "날짜/검수점포로 조회 후 미리보기 또는 삭제하세요."}
+        </Text>
 
         <View style={styles.badgeRow}>
           <View style={styles.badge}>
@@ -573,130 +638,53 @@ export default function PhotoListScreen() {
 
       {/* 컨트롤 */}
       <View style={{ paddingHorizontal: 16, gap: 10, paddingBottom: 10 }}>
-        {/* 토글 2개 한줄 */}
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          {isAdmin ? (
-            <View style={[styles.miniToggleCard, { flex: 1 }]}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Ionicons name="shield-checkmark-outline" size={16} color={THEME.text} />
-                <Text style={styles.miniToggleTitle} numberOfLines={1}>
-                  관리자 전체
-                </Text>
-              </View>
-              <Switch value={adminSeeAll} onValueChange={setAdminSeeAll} />
-            </View>
-          ) : (
-            <View style={{ flex: 1 }} />
-          )}
-
-          <View style={[styles.miniToggleCard, { flex: 1, opacity: isAdmin && adminSeeAll ? 0.5 : 1 }]}>
-            <View style={{ gap: 2, flex: 1, paddingRight: 8 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <MaterialCommunityIcons name="account-multiple-outline" size={16} color={THEME.text} />
-                <Text style={styles.miniToggleTitle} numberOfLines={1}>
-                  {onlyMine ? "내것만" : "작업파트"}
-                </Text>
-              </View>
-              <Text style={styles.miniToggleSub} numberOfLines={1}>
-                {myWorkPart ? `파트: ${myWorkPart}` : "파트 미설정"}
-              </Text>
-            </View>
-            <Switch value={onlyMine} onValueChange={setOnlyMine} disabled={isAdmin && adminSeeAll} />
-          </View>
-        </View>
-
-        {/* 필터 카드 */}
-        <View style={styles.card}>
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            {/* 날짜 */}
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>날짜</Text>
-              <Pressable
-                onPress={openCalendar}
-                disabled={loading || busy}
-                style={[styles.field48, (loading || busy) && styles.dim]}
-              >
-                <View style={styles.fieldRow}>
-                  <Ionicons name="calendar-outline" size={18} color={THEME.subtext} />
-                  <Text style={styles.fieldText}>{dateStr}</Text>
-                  <View style={{ flex: 1 }} />
-                  <Ionicons name="chevron-down" size={16} color={THEME.muted} />
-                </View>
-              </Pressable>
-            </View>
-
-            {/* 검수점포 */}
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>검수점포</Text>
-              <Pressable
-                onPress={openInspectModal}
-                disabled={loading || busy}
-                style={[
-                  styles.field48,
-                  styles.inspectField,
-                  (loading || busy) && styles.dim,
-                  selectedStore ? styles.inspectFieldSelected : null,
-                ]}
-              >
-                <View style={styles.fieldRow}>
-                  <MaterialCommunityIcons
-                    name={selectedStore ? "store-check-outline" : "store-search-outline"}
-                    size={20}
-                    color={selectedStore ? THEME.blue : THEME.text}
-                  />
-                  <Text
-                    style={[styles.fieldText, { flex: 1 }, !selectedStore ? { color: THEME.muted } : null]}
-                    numberOfLines={1}
+        {/* ✅ 기사 모드: 카테고리 탭만 보여줌 */}
+        {isDriver ? (
+          <View style={styles.card}>
+            <Text style={styles.label}>기사 분류</Text>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              {(["bottle", "tobacco", "miochul"] as DriverCategory[]).map((c) => {
+                const on = driverCategory === c;
+                return (
+                  <Pressable
+                    key={c}
+                    onPress={() => setDriverCategory(c)}
+                    style={[
+                      styles.catPill,
+                      {
+                        borderColor: on ? categoryColor(c) : THEME.border,
+                        backgroundColor: on ? THEME.soft : THEME.surface,
+                      },
+                    ]}
                   >
-                    {selectedStore ? buildStoreTitle(selectedStore, selectedStore.store_code) : "눌러서 점포 선택"}
-                  </Text>
-                  <Ionicons name="chevron-down" size={16} color={THEME.muted} />
-                </View>
-              </Pressable>
-
-              {!!selectedStore && (
-                <Pressable
-                  onPress={() => setSelectedStore(null)}
-                  disabled={loading || busy}
-                  style={[styles.clearLink, (loading || busy) && styles.dim]}
-                >
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Ionicons name="close-circle" size={15} color={THEME.danger} />
-                    <Text style={styles.clearText}>선택 해제</Text>
-                  </View>
-                </Pressable>
-              )}
-            </View>
-          </View>
-
-          {/* 검색점포 + 버튼 */}
-          <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>검색점포</Text>
-
-              <View style={styles.textInputWrap}>
-                <Ionicons name="search-outline" size={18} color={THEME.subtext} />
-                <TextInput
-                  value={searchText}
-                  onChangeText={setSearchText}
-                  placeholder="점포코드 또는 점포명"
-                  placeholderTextColor={THEME.muted}
-                  style={styles.textInput}
-                  returnKeyType="search"
-                  onSubmitEditing={() => fetchList()}
-                />
-                {searchText.length > 0 && (
-                  <Pressable onPress={() => setSearchText("")} style={{ padding: 6 }} hitSlop={8}>
-                    <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                    <Text style={[styles.catPillText, { color: on ? categoryColor(c) : THEME.text }]}>
+                      {categoryLabel(c)}
+                    </Text>
                   </Pressable>
-                )}
-              </View>
+                );
+              })}
             </View>
+
+            <View style={{ height: 10 }} />
+
+            <Text style={styles.label}>날짜</Text>
+            <Pressable
+              onPress={openCalendar}
+              disabled={loading || busy}
+              style={[styles.field48, (loading || busy) && styles.dim]}
+            >
+              <View style={styles.fieldRow}>
+                <Ionicons name="calendar-outline" size={18} color={THEME.subtext} />
+                <Text style={styles.fieldText}>{dateStr}</Text>
+                <View style={{ flex: 1 }} />
+                <Ionicons name="chevron-down" size={16} color={THEME.muted} />
+              </View>
+            </Pressable>
 
             <TouchableOpacity
               onPress={() => fetchList()}
               disabled={loading || busy}
-              style={[styles.btn, styles.btnPrimary, (loading || busy) && styles.dim]}
+              style={[styles.btnWide, styles.btnPrimary, (loading || busy) && styles.dim, { marginTop: 10 }]}
             >
               <View style={styles.btnInner}>
                 <Ionicons name="search-outline" size={18} color="#fff" />
@@ -704,42 +692,179 @@ export default function PhotoListScreen() {
               </View>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={enterOrExitSelectMode}
-              disabled={loading || busy}
-              style={[
-                styles.btn,
-                styles.btnOutline,
-                (loading || busy) && styles.dim,
-                selectMode && { backgroundColor: THEME.blueSoft, borderColor: "rgba(37,99,235,0.35)" },
-              ]}
-            >
-              <View style={styles.btnInner}>
-                <Ionicons name="checkbox-outline" size={18} color={THEME.text} />
-                <Text style={styles.btnText}>선택 {selectedIds.size}</Text>
-              </View>
-            </TouchableOpacity>
+            {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
           </View>
+        ) : (
+          <>
+            {/* 토글 2개 한줄 */}
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              {isAdmin ? (
+                <View style={[styles.miniToggleCard, { flex: 1 }]}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Ionicons name="shield-checkmark-outline" size={16} color={THEME.text} />
+                    <Text style={styles.miniToggleTitle} numberOfLines={1}>
+                      관리자 전체
+                    </Text>
+                  </View>
+                  <Switch value={adminSeeAll} onValueChange={setAdminSeeAll} />
+                </View>
+              ) : (
+                <View style={{ flex: 1 }} />
+              )}
 
-          {selectMode && (
-            <TouchableOpacity
-              onPress={deleteSelected}
-              disabled={selectedIds.size === 0 || busy || loading}
-              style={[
-                styles.btnWide,
-                styles.btnDangerOutline,
-                (selectedIds.size === 0 || busy || loading) && { opacity: 0.35 },
-              ]}
-            >
-              <View style={styles.btnInner}>
-                <Ionicons name="trash-outline" size={18} color={THEME.danger} />
-                <Text style={styles.btnTextDanger}>선택 삭제</Text>
+              <View style={[styles.miniToggleCard, { flex: 1, opacity: isAdmin && adminSeeAll ? 0.5 : 1 }]}>
+                <View style={{ gap: 2, flex: 1, paddingRight: 8 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <MaterialCommunityIcons name="account-multiple-outline" size={16} color={THEME.text} />
+                    <Text style={styles.miniToggleTitle} numberOfLines={1}>
+                      {onlyMine ? "내것만" : "작업파트"}
+                    </Text>
+                  </View>
+                  <Text style={styles.miniToggleSub} numberOfLines={1}>
+                    {myWorkPart ? `파트: ${myWorkPart}` : "파트 미설정"}
+                  </Text>
+                </View>
+                <Switch value={onlyMine} onValueChange={setOnlyMine} disabled={isAdmin && adminSeeAll} />
               </View>
-            </TouchableOpacity>
-          )}
+            </View>
 
-          {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
-        </View>
+            {/* 필터 카드 */}
+            <View style={styles.card}>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                {/* 날짜 */}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>날짜</Text>
+                  <Pressable
+                    onPress={openCalendar}
+                    disabled={loading || busy}
+                    style={[styles.field48, (loading || busy) && styles.dim]}
+                  >
+                    <View style={styles.fieldRow}>
+                      <Ionicons name="calendar-outline" size={18} color={THEME.subtext} />
+                      <Text style={styles.fieldText}>{dateStr}</Text>
+                      <View style={{ flex: 1 }} />
+                      <Ionicons name="chevron-down" size={16} color={THEME.muted} />
+                    </View>
+                  </Pressable>
+                </View>
+
+                {/* 검수점포 */}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>검수점포</Text>
+                  <Pressable
+                    onPress={openInspectModal}
+                    disabled={loading || busy}
+                    style={[
+                      styles.field48,
+                      styles.inspectField,
+                      (loading || busy) && styles.dim,
+                      selectedStore ? styles.inspectFieldSelected : null,
+                    ]}
+                  >
+                    <View style={styles.fieldRow}>
+                      <MaterialCommunityIcons
+                        name={selectedStore ? "store-check-outline" : "store-search-outline"}
+                        size={20}
+                        color={selectedStore ? THEME.blue : THEME.text}
+                      />
+                      <Text
+                        style={[styles.fieldText, { flex: 1 }, !selectedStore ? { color: THEME.muted } : null]}
+                        numberOfLines={1}
+                      >
+                        {selectedStore ? buildStoreTitle(selectedStore, selectedStore.store_code) : "눌러서 점포 선택"}
+                      </Text>
+                      <Ionicons name="chevron-down" size={16} color={THEME.muted} />
+                    </View>
+                  </Pressable>
+
+                  {!!selectedStore && (
+                    <Pressable
+                      onPress={() => setSelectedStore(null)}
+                      disabled={loading || busy}
+                      style={[styles.clearLink, (loading || busy) && styles.dim]}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Ionicons name="close-circle" size={15} color={THEME.danger} />
+                        <Text style={styles.clearText}>선택 해제</Text>
+                      </View>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+
+              {/* 검색점포 + 버튼 */}
+              <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>검색점포</Text>
+
+                  <View style={styles.textInputWrap}>
+                    <Ionicons name="search-outline" size={18} color={THEME.subtext} />
+                    <TextInput
+                      value={searchText}
+                      onChangeText={setSearchText}
+                      placeholder="점포코드 또는 점포명"
+                      placeholderTextColor={THEME.muted}
+                      style={styles.textInput}
+                      returnKeyType="search"
+                      onSubmitEditing={() => fetchList()}
+                    />
+                    {searchText.length > 0 && (
+                      <Pressable onPress={() => setSearchText("")} style={{ padding: 6 }} hitSlop={8}>
+                        <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  onPress={() => fetchList()}
+                  disabled={loading || busy}
+                  style={[styles.btn, styles.btnPrimary, (loading || busy) && styles.dim]}
+                >
+                  <View style={styles.btnInner}>
+                    <Ionicons name="search-outline" size={18} color="#fff" />
+                    <Text style={styles.btnTextWhite}>{loading ? "조회중" : "조회"}</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={enterOrExitSelectMode}
+                  disabled={loading || busy}
+                  style={[
+                    styles.btn,
+                    styles.btnOutline,
+                    (loading || busy) && styles.dim,
+                    selectMode && { backgroundColor: THEME.blueSoft, borderColor: "rgba(37,99,235,0.35)" },
+                  ]}
+                >
+                  <View style={styles.btnInner}>
+                    <Ionicons name="checkbox-outline" size={18} color={THEME.text} />
+                    <Text style={styles.btnText}>선택 {selectedIds.size}</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+
+              {selectMode && (
+                <TouchableOpacity
+                  onPress={deleteSelected}
+                  disabled={selectedIds.size === 0 || busy || loading}
+                  style={[
+                    styles.btnWide,
+                    styles.btnDangerOutline,
+                    (selectedIds.size === 0 || busy || loading) && { opacity: 0.35 },
+                  ]}
+                >
+                  <View style={styles.btnInner}>
+                    <Ionicons name="trash-outline" size={18} color={THEME.danger} />
+                    <Text style={styles.btnTextDanger}>선택 삭제</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
+            </View>
+          </>
+        )}
       </View>
 
       {/* 리스트 */}
@@ -755,20 +880,6 @@ export default function PhotoListScreen() {
                   <Ionicons name="information-circle-outline" size={18} color={THEME.subtext} />
                   <Text style={styles.emptyTitle}>조회 결과가 없습니다.</Text>
                 </View>
-                <View style={styles.emptyCard}>
-                  <View style={styles.emptyLine}>
-                    <Ionicons name="checkmark-circle-outline" size={16} color={THEME.subtext} />
-                    <Text style={styles.emptyText}>날짜/필터가 올바른지 확인</Text>
-                  </View>
-                  <View style={styles.emptyLine}>
-                    <Ionicons name="shield-outline" size={16} color={THEME.subtext} />
-                    <Text style={styles.emptyText}>작업파트 공유 조회면 RLS 정책이 막고 있을 수 있음</Text>
-                  </View>
-                  <View style={styles.emptyLine}>
-                    <Ionicons name="refresh-outline" size={16} color={THEME.subtext} />
-                    <Text style={styles.emptyText}>우측 상단 새로고침으로 다시 조회</Text>
-                  </View>
-                </View>
               </View>
             }
             renderItem={({ item }) => {
@@ -781,6 +892,9 @@ export default function PhotoListScreen() {
               const groupAllSelected = groupSelectedCount === count && count > 0;
 
               const title = buildStoreTitle(meta, item.store_code);
+
+              // ✅ 기사면: 카테고리 pill 표시(현재 탭이지만 UI 명확하게)
+              const catLabel = isDriver ? categoryLabel(driverCategory) : "";
 
               return (
                 <Pressable
@@ -797,10 +911,7 @@ export default function PhotoListScreen() {
                       openPreviewForStore(item.store_code);
                     }
                   }}
-                  style={[
-                    styles.row,
-                    selectMode && groupSelectedCount > 0 && { backgroundColor: THEME.blueSoft },
-                  ]}
+                  style={[styles.row, selectMode && groupSelectedCount > 0 && { backgroundColor: THEME.blueSoft }]}
                 >
                   <View style={styles.thumbWrap}>
                     {first ? (
@@ -817,6 +928,12 @@ export default function PhotoListScreen() {
                       {title}
                     </Text>
                     <Text style={styles.rowSub}>업로드 : {timeStr}</Text>
+
+                    {isDriver ? (
+                      <View style={[styles.catBadge, { borderColor: categoryColor(driverCategory) }]}>
+                        <Text style={[styles.catBadgeText, { color: categoryColor(driverCategory) }]}>{catLabel}</Text>
+                      </View>
+                    ) : null}
 
                     {selectMode && (
                       <View style={styles.selectPill}>
@@ -846,7 +963,9 @@ export default function PhotoListScreen() {
         </View>
 
         <Text style={styles.hint}>
-          선택 버튼으로 선택모드 ON/OFF · 선택모드에서는 점포 줄 탭으로 그룹 단위 선택/해제
+          {isDriver
+            ? "기사 조회: 내 업로드만 · 공병/담배/미오출 탭으로 전환"
+            : "선택 버튼으로 선택모드 ON/OFF · 선택모드에서는 점포 줄 탭으로 그룹 단위 선택/해제"}
         </Text>
       </View>
 
@@ -864,7 +983,7 @@ export default function PhotoListScreen() {
                 {previewTitle}
               </Text>
               <Text style={styles.previewSub} numberOfLines={1}>
-                {previewItems.length}장 · 탭해서 저장/삭제
+                {previewItems.length}장 · 저장/삭제
               </Text>
             </View>
 
@@ -877,42 +996,60 @@ export default function PhotoListScreen() {
             data={previewItems}
             keyExtractor={(p) => p.id}
             contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: bottomPad, gap: 10 }}
-            renderItem={({ item }) => (
-              <View style={styles.previewCard}>
-                <View style={styles.previewTopRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.previewTime}>{formatKST(item.created_at)}</Text>
-                    {!!item.work_part && <Text style={styles.previewTag}>작업파트: {item.work_part}</Text>}
+            renderItem={({ item }) => {
+              const isMio = String(item.category ?? "") === "miochul";
+              return (
+                <View style={styles.previewCard}>
+                  <View style={styles.previewTopRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.previewTime}>{formatKST(item.created_at)}</Text>
+
+                      {isDriver ? (
+                        <Text style={styles.previewTag}>
+                          분류: {categoryLabel(driverCategory)}
+                          {isMio ? ` · 납품예정일: ${item.delivery_planned_date ?? "-"}` : ""}
+                        </Text>
+                      ) : (
+                        !!item.work_part && <Text style={styles.previewTag}>작업파트: {item.work_part}</Text>
+                      )}
+
+                      {/* ✅ 미오출이면 추가내용 노출 */}
+                      {isMio ? (
+                        <Text style={styles.previewMioNote} numberOfLines={5}>
+                          추가내용: {item.extra_note ?? "-"}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Pressable
+                        onPress={() => saveToGalleryOne(item.original_url)}
+                        disabled={busy}
+                        style={[styles.smallBtn, busy && { opacity: 0.6 }]}
+                        hitSlop={8}
+                      >
+                        <Ionicons name="download-outline" size={16} color={THEME.text} />
+                        <Text style={styles.smallBtnText}>저장</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => onDeleteOne(item)}
+                        disabled={busy}
+                        style={[styles.smallDangerBtn, busy && { opacity: 0.6 }]}
+                        hitSlop={8}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={THEME.danger} />
+                        <Text style={styles.smallDangerText}>삭제</Text>
+                      </Pressable>
+                    </View>
                   </View>
 
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Pressable
-                      onPress={() => saveToGalleryOne(item.original_url)}
-                      disabled={busy}
-                      style={[styles.smallBtn, busy && { opacity: 0.6 }]}
-                      hitSlop={8}
-                    >
-                      <Ionicons name="download-outline" size={16} color={THEME.text} />
-                      <Text style={styles.smallBtnText}>저장</Text>
-                    </Pressable>
+                  <View style={{ height: 10 }} />
 
-                    <Pressable
-                      onPress={() => onDeleteOne(item)}
-                      disabled={busy}
-                      style={[styles.smallDangerBtn, busy && { opacity: 0.6 }]}
-                      hitSlop={8}
-                    >
-                      <Ionicons name="trash-outline" size={16} color={THEME.danger} />
-                      <Text style={styles.smallDangerText}>삭제</Text>
-                    </Pressable>
-                  </View>
+                  <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
                 </View>
-
-                <View style={{ height: 10 }} />
-
-                <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
-              </View>
-            )}
+              );
+            }}
             ListEmptyComponent={
               <View style={{ padding: 16 }}>
                 <Text style={{ color: THEME.subtext }}>미리보기 데이터가 없습니다.</Text>
@@ -975,7 +1112,7 @@ export default function PhotoListScreen() {
         </View>
       </Modal>
 
-      {/* 검수점포 모달 */}
+      {/* 검수점포 모달 (기사 모드에서는 안 쓰지만, 기존 유지) */}
       <Modal visible={inspectModalOpen} transparent animationType="fade" onRequestClose={() => setInspectModalOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setInspectModalOpen(false)} />
 
@@ -1056,7 +1193,11 @@ export default function PhotoListScreen() {
                         </Text>
                       </View>
 
-                      <Ionicons name={isSelected ? "checkmark-circle" : "chevron-forward"} size={18} color={isSelected ? THEME.blue : THEME.muted} />
+                      <Ionicons
+                        name={isSelected ? "checkmark-circle" : "chevron-forward"}
+                        size={18}
+                        color={isSelected ? THEME.blue : THEME.muted}
+                      />
                     </Pressable>
                   );
                 }}
@@ -1156,16 +1297,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  textInput: {
-    flex: 1,
-    color: THEME.text,
-    fontWeight: "900",
-    fontSize: 13,
-    paddingVertical: 0,
-  },
+  textInput: { flex: 1, color: THEME.text, fontWeight: "900", fontSize: 13, paddingVertical: 0 },
 
   btn: { height: 48, paddingHorizontal: 14, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  btnWide: { height: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", marginTop: 10 },
+  btnWide: { height: 48, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   btnInner: { flexDirection: "row", alignItems: "center", gap: 8 },
   btnPrimary: { backgroundColor: THEME.primary },
   btnOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: THEME.primary },
@@ -1184,6 +1319,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: THEME.surface,
   },
+
   row: {
     padding: 12,
     borderBottomWidth: 1,
@@ -1201,6 +1337,16 @@ const styles = StyleSheet.create({
   rowTextWrap: { flex: 1, gap: 6 },
   rowTitleStrong: { fontWeight: "950" as any, fontSize: 13, color: THEME.text, lineHeight: 18 },
   rowSub: { color: THEME.subtext, fontSize: 12, lineHeight: 16 },
+
+  catBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: THEME.soft,
+  },
+  catBadgeText: { fontWeight: "900", fontSize: 12 },
 
   selectPill: {
     alignSelf: "flex-start",
@@ -1235,17 +1381,6 @@ const styles = StyleSheet.create({
 
   emptyTitleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   emptyTitle: { color: THEME.subtext, fontWeight: "900", fontSize: 13 },
-  emptyCard: {
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 14,
-    padding: 12,
-    backgroundColor: THEME.soft,
-    gap: 10,
-  },
-  emptyLine: { flexDirection: "row", alignItems: "center", gap: 8 },
-  emptyText: { color: THEME.subtext, fontWeight: "800", fontSize: 12, flex: 1 },
 
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
 
@@ -1282,9 +1417,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 2,
   },
-  previewTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  previewTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   previewTime: { fontWeight: "950" as any, color: THEME.text, fontSize: 12 },
   previewTag: { marginTop: 6, color: THEME.subtext, fontWeight: "800", fontSize: 12 },
+  previewMioNote: { marginTop: 8, color: THEME.text, fontWeight: "800", fontSize: 12, lineHeight: 16 },
 
   smallBtn: {
     flexDirection: "row",
@@ -1410,4 +1546,8 @@ const styles = StyleSheet.create({
   cell: { fontWeight: "900", color: THEME.text, fontSize: 13 },
   cellStrong: { fontWeight: "900", color: THEME.text, fontSize: 13 },
   cellName: { fontWeight: "800", color: THEME.text, fontSize: 13 },
+
+  // ✅ 기사 탭 pill
+  catPill: { flex: 1, height: 44, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  catPillText: { fontWeight: "900", fontSize: 13 },
 });

@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import { Buffer } from "buffer";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
@@ -6,33 +7,46 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  Image,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  FlatList,
-  StyleSheet,
-  Image,
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 import { getWorkPartOptionsExceptDriver, Option } from "../../src/lib/workParts";
-import { Ionicons } from "@expo/vector-icons";
 
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
+import { Calendar } from "react-native-calendars";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 export const options = { headerShown: false };
 
 type Mode = "search" | "inspect";
+type DriverCategory = "bottle" | "tobacco" | "miochul";
 
 type StoreMapRow = {
   store_code: string;
   store_name: string;
   car_no: number | null;
   seq_no: number | null;
+};
+
+type CarPick =
+  | { kind: "car"; carNo: number; label: string }
+  | { kind: "support"; label: string };
+
+type MiochulFlags = {
+  redelivery: boolean; // 재배송
+  damage: boolean; // 파손
+  other: boolean; // 기타
 };
 
 function kstNowDateString(): string {
@@ -96,31 +110,79 @@ const THEME = {
   dangerSoft: "#FEF2F2",
   success: "#16A34A",
   successSoft: "#ECFDF5",
+  amber: "#F59E0B",
+  purple: "#7C3AED",
+  purpleSoft: "#F5F3FF",
 };
+
+function categoryLabel(c: DriverCategory) {
+  if (c === "bottle") return "공병";
+  if (c === "tobacco") return "담배";
+  return "미오출";
+}
+
+function categoryColor(c: DriverCategory) {
+  if (c === "bottle") return THEME.blue;
+  if (c === "tobacco") return THEME.amber;
+  return THEME.purple;
+}
+
+function miochulFlagLabels(flags: MiochulFlags) {
+  const arr: string[] = [];
+  if (flags.redelivery) arr.push("재배송");
+  if (flags.damage) arr.push("파손");
+  if (flags.other) arr.push("기타");
+  return arr;
+}
+
+/**
+ * ✅ 호차는 무조건 4자리 숫자
+ * profiles.car_no (text) 값이 "1801 / 1802" 형태여도 [1801,1802]로 분리.
+ */
+function parseCarNos(row: any): number[] {
+  const out: number[] = [];
+  const src = String(row?.car_no ?? "").trim();
+  if (src) {
+    const matches = src.match(/\d{4}/g) ?? [];
+    matches.forEach((m) => {
+      const n = Number(m);
+      if (!Number.isNaN(n) && n >= 1000 && n <= 9999) out.push(n);
+    });
+  }
+  const uniq = Array.from(new Set(out));
+  uniq.sort((a, b) => a - b);
+  return uniq;
+}
 
 export default function UploadScreen() {
   const router = useRouter();
 
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
-
   const topPad = Math.min(Math.max(insets.top, 6), 18) + 4;
 
-  /**
-   * ✅ 핵심 변경:
-   * - bottomWrap을 absolute로 "떠있게" 만들고
-   * - FlatList 영역은 paddingBottom으로 bottomWrap 높이만큼 예약
-   *
-   * 이렇게 하면 "가운데 리스트"는 줄어들지 않고 넓게 유지됨.
-   */
   const bottomPad = Math.max(insets.bottom, 2) + 10;
-
-  // bottomWrap이 대략 차지하는 높이(기기별 약간 차이 있으니 넉넉히)
-  const BOTTOM_EST_HEIGHT = 270;
+  const BOTTOM_EST_HEIGHT = 300;
   const listReserveBottom = tabBarHeight + bottomPad + BOTTOM_EST_HEIGHT;
 
-  const [mode, setMode] = useState<Mode>("search");
+  // ✅ 키보드 올라올 때 밀어올릴 기준 (탭바/세이프영역 고려)
+  const keyboardOffset = tabBarHeight + Math.max(insets.bottom, 0);
 
+  // ===== 공통 =====
+  const [selectedStore, setSelectedStore] = useState<StoreMapRow | null>(null);
+  const [queueAssets, setQueueAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const queueCount = queueAssets.length;
+
+  const [busy, setBusy] = useState(false);
+
+  const [myWorkPart, setMyWorkPart] = useState<string>("");
+  const [isDriver, setIsDriver] = useState(false);
+
+  const [doneStoreSet, setDoneStoreSet] = useState<Set<string>>(new Set());
+  const [doneLoading, setDoneLoading] = useState(false);
+
+  // ===== 현장 =====
+  const [mode, setMode] = useState<Mode>("search");
   const [query, setQuery] = useState("");
   const [storeResults, setStoreResults] = useState<StoreMapRow[]>([]);
 
@@ -128,21 +190,35 @@ export default function UploadScreen() {
   const [inspectStores, setInspectStores] = useState<StoreMapRow[]>([]);
   const [inspectLoading, setInspectLoading] = useState(false);
 
-  const [selectedStore, setSelectedStore] = useState<StoreMapRow | null>(null);
-  const [busy, setBusy] = useState(false);
+  // ===== 기사 =====
+  const [carNos, setCarNos] = useState<number[]>([]);
+  const [carPick, setCarPick] = useState<CarPick | null>(null);
+  const [carDropdownOpen, setCarDropdownOpen] = useState(false);
 
-  const [myWorkPart, setMyWorkPart] = useState<string>("");
+  const [driverStores, setDriverStores] = useState<StoreMapRow[]>([]);
+  const [driverLoading, setDriverLoading] = useState(false);
 
-  const [doneStoreSet, setDoneStoreSet] = useState<Set<string>>(new Set());
-  const [doneLoading, setDoneLoading] = useState(false);
+  const [driverCategory, setDriverCategory] = useState<DriverCategory>("bottle");
 
+  // ✅ 미오출
+  const [miochulPlanned, setMiochulPlanned] = useState(""); // YYYY-MM-DD
+  const [miochulDetail, setMiochulDetail] = useState(""); // 상세내용
+  const [miochulFlags, setMiochulFlags] = useState<MiochulFlags>({
+    redelivery: false,
+    damage: false,
+    other: false,
+  });
+  const [miochulModalOpen, setMiochulModalOpen] = useState(false);
+
+  // 지원일 때 점포검색
+  const [supportQuery, setSupportQuery] = useState("");
+  const [supportResults, setSupportResults] = useState<StoreMapRow[]>([]);
+  const [supportBusy, setSupportBusy] = useState(false);
+
+  // 관리자 작업파트 설정(현장 유지)
   const [workPartModalOpen, setWorkPartModalOpen] = useState(false);
   const [selectedWorkPartInModal, setSelectedWorkPartInModal] = useState<string>("");
-
   const workPartOptions = useMemo<Option[]>(() => getWorkPartOptionsExceptDriver(), []);
-
-  const [queueAssets, setQueueAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
-  const queueCount = queueAssets.length;
 
   const requireSession = async () => {
     const { data, error } = await supabase.auth.getSession();
@@ -157,15 +233,30 @@ export default function UploadScreen() {
     return data.session;
   };
 
-  const loadMyWorkPart = async (userId: string) => {
-    const { data, error } = await supabase.from("profiles").select("work_part").eq("id", userId).single();
+  const loadMyProfile = async (userId: string) => {
+    const { data, error } = await supabase.from("profiles").select("work_part, car_no").eq("id", userId).single();
     if (error) throw error;
-    const wp = (data?.work_part ?? "").trim();
+
+    const wp = String(data?.work_part ?? "").trim();
     setMyWorkPart(wp);
+
+    const driverFlag = wp.includes("기사");
+    setIsDriver(driverFlag);
+
+    if (driverFlag) {
+      const list = parseCarNos(data);
+      setCarNos(list);
+
+      if (list.length >= 1) setCarPick({ kind: "car", carNo: list[0], label: String(list[0]) });
+      else setCarPick({ kind: "support", label: "지원" });
+    } else {
+      setMode("search");
+    }
+
     return wp;
   };
 
-  const loadDoneStoresForToday = async (workPart: string) => {
+  const loadDoneStoresForToday = async (workPart: string, cat?: DriverCategory) => {
     const session = await requireSession();
     if (!session) return;
 
@@ -180,20 +271,51 @@ export default function UploadScreen() {
       const day = kstNowDateString();
       const { startIso, endIso } = kstDayRangeUtcIso(day);
 
-      const { data: photos, error: pErr } = await supabase
+      if (wp.includes("기사")) {
+        let q = supabase
+          .from("delivery_photos")
+          .select("store_code, created_at, path, created_by")
+          .eq("created_by", session.user.id)
+          .gte("created_at", startIso)
+          .lt("created_at", endIso)
+          .limit(5000);
+
+        if (cat) q = (q as any).ilike("path", `${cat}/%`);
+
+        const { data: rows, error } = await q;
+        if (error) throw error;
+
+        const done = new Set<string>();
+        ((rows ?? []) as any[]).forEach((r) => {
+          const storeCode = String(r?.store_code ?? "");
+          if (!storeCode) return;
+          if (cat) done.add(`${storeCode}:${cat}`);
+          else done.add(storeCode);
+        });
+
+        setDoneStoreSet(done);
+        return;
+      }
+
+      let q = supabase
         .from("photos")
-        .select("store_code, work_part, created_at")
+        .select("store_code, created_at, category, work_part")
         .eq("work_part", wp)
         .gte("created_at", startIso)
         .lt("created_at", endIso)
         .limit(5000);
 
+      if (cat) q = (q as any).eq("category", cat);
+
+      const { data: photos, error: pErr } = await q;
       if (pErr) throw pErr;
 
       const done = new Set<string>();
       ((photos ?? []) as any[]).forEach((r) => {
         const storeCode = String(r?.store_code ?? "");
-        if (storeCode) done.add(storeCode);
+        if (!storeCode) return;
+        if (cat) done.add(`${storeCode}:${cat}`);
+        else done.add(storeCode);
       });
 
       setDoneStoreSet(done);
@@ -209,12 +331,79 @@ export default function UploadScreen() {
       try {
         const session = await requireSession();
         if (!session) return;
-        const wp = await loadMyWorkPart(session.user.id);
-        await loadDoneStoresForToday(wp);
-      } catch {}
+        const wp = await loadMyProfile(session.user.id);
+        await loadDoneStoresForToday(wp, wp.includes("기사") ? driverCategory : undefined);
+      } catch (e: any) {
+        Alert.alert("초기 로딩 실패", e?.message ?? String(e));
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!isDriver) return;
+    if (!carPick) return;
+
+    (async () => {
+      const wp = (myWorkPart ?? "").trim();
+      if (wp) await loadDoneStoresForToday(wp, driverCategory);
+
+      if (carPick.kind === "car") await loadDriverStoresByCarNo(carPick.carNo);
+      else setDriverStores([]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDriver, carPick?.kind, (carPick as any)?.carNo, driverCategory]);
+
+  const loadDriverStoresByCarNo = async (carNo: number) => {
+    const session = await requireSession();
+    if (!session) return;
+
+    setDriverLoading(true);
+    try {
+      const { data, error } = await supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("car_no", carNo).limit(5000);
+      if (error) throw error;
+
+      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
+      setDriverStores(rows);
+    } catch (e: any) {
+      Alert.alert("호차 점포 로딩 오류", e?.message ?? String(e));
+      setDriverStores([]);
+    } finally {
+      setDriverLoading(false);
+    }
+  };
+
+  const doSupportStoreSearch = async () => {
+    const session = await requireSession();
+    if (!session) return;
+
+    Keyboard.dismiss();
+
+    const q = supportQuery.trim();
+    if (!q) return Alert.alert("경고", "점포코드 또는 점포명을 입력하세요.");
+
+    setSupportBusy(true);
+    try {
+      const like = `%${q}%`;
+      const { data, error } = await supabase
+        .from("store_map")
+        .select("store_code, store_name, car_no, seq_no")
+        .or(`store_code.ilike.${like},store_name.ilike.${like}`)
+        .order("car_no", { ascending: true, nullsFirst: false })
+        .order("seq_no", { ascending: true, nullsFirst: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
+      setSupportResults(rows);
+      if (rows.length === 0) Alert.alert("결과 없음", "검색 결과가 없습니다.");
+    } catch (e: any) {
+      Alert.alert("오류", e?.message ?? String(e));
+    } finally {
+      setSupportBusy(false);
+    }
+  };
 
   const loadInspectStores = async () => {
     const session = await requireSession();
@@ -222,21 +411,14 @@ export default function UploadScreen() {
 
     setInspectLoading(true);
     try {
-      let wp = (myWorkPart ?? "").trim();
-      if (!wp) wp = await loadMyWorkPart(session.user.id);
-
-      const { data, error } = await supabase
-        .from("store_map")
-        .select("store_code, store_name, car_no, seq_no")
-        .eq("is_inspection", true)
-        .limit(5000);
-
+      const { data, error } = await supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("is_inspection", true).limit(5000);
       if (error) throw error;
 
       const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
       setInspectStores(rows);
 
-      await loadDoneStoresForToday(wp);
+      const wp = (myWorkPart ?? "").trim();
+      if (wp) await loadDoneStoresForToday(wp);
     } catch (e: any) {
       Alert.alert("검수 점포 로딩 오류", e?.message ?? String(e));
       setInspectStores([]);
@@ -252,17 +434,10 @@ export default function UploadScreen() {
     Keyboard.dismiss();
 
     const q = query.trim();
-    if (!q) {
-      Alert.alert("경고", "점포코드 또는 점포명을 입력하세요.");
-      return;
-    }
+    if (!q) return Alert.alert("경고", "점포코드 또는 점포명을 입력하세요.");
 
     setBusy(true);
     try {
-      let wp = (myWorkPart ?? "").trim();
-      if (!wp) wp = await loadMyWorkPart(session.user.id);
-      await loadDoneStoresForToday(wp);
-
       const like = `%${q}%`;
       const { data, error } = await supabase
         .from("store_map")
@@ -277,6 +452,9 @@ export default function UploadScreen() {
       const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
       setStoreResults(rows);
       if (rows.length === 0) Alert.alert("결과 없음", "검색 결과가 없습니다.");
+
+      const wp = (myWorkPart ?? "").trim();
+      if (wp) await loadDoneStoresForToday(wp);
     } catch (e: any) {
       Alert.alert("오류", e?.message ?? String(e));
     } finally {
@@ -292,10 +470,35 @@ export default function UploadScreen() {
   const removeFromQueue = (uri: string) => setQueueAssets((prev) => prev.filter((a) => a.uri !== uri));
   const clearQueue = () => setQueueAssets([]);
 
+  // ✅ 미오출은 업로드 직전에만 검증
+  const ensureMiochulFieldsOk = () => {
+    if (!isDriver) return true;
+    if (driverCategory !== "miochul") return true;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(miochulPlanned.trim())) {
+      Alert.alert("미오출", "납품예정일을 선택하세요.");
+      return false;
+    }
+
+    const picked = miochulFlagLabels(miochulFlags);
+    if (picked.length === 0) {
+      Alert.alert("미오출", "재배송/파손/기타 중 최소 1개를 선택하세요.");
+      return false;
+    }
+
+    if (miochulDetail.trim().length < 1) {
+      Alert.alert("미오출", "상세내용을 입력하세요.");
+      return false;
+    }
+
+    return true;
+  };
+
   const pickMultiFromGalleryToQueue = async () => {
     const session = await requireSession();
     if (!session) return;
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택하세요.");
+    if (!ensureMiochulFieldsOk()) return;
 
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) return Alert.alert("권한 필요", "사진 접근 권한을 허용해주세요.");
@@ -315,6 +518,7 @@ export default function UploadScreen() {
     const session = await requireSession();
     if (!session) return;
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택하세요.");
+    if (!ensureMiochulFieldsOk()) return;
 
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) return Alert.alert("권한 필요", "카메라 권한을 허용해주세요.");
@@ -324,6 +528,42 @@ export default function UploadScreen() {
     addToQueue(shot.assets ?? []);
   };
 
+  // ✅ 현장(photos) insert robust
+  const insertPhotoRowRobust = async (payload: any, minimalPayload: any) => {
+    const { error } = await supabase.from("photos").insert(payload);
+    if (!error) return;
+
+    const msg = String((error as any)?.message ?? "");
+    const looksLikeMissingColumn =
+      msg.toLowerCase().includes("column") || msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("schema cache");
+
+    if (looksLikeMissingColumn) {
+      const { error: e2 } = await supabase.from("photos").insert(minimalPayload);
+      if (!e2) return;
+      throw e2;
+    }
+
+    throw error;
+  };
+
+  // ✅ 기사(배송) delivery_photos insert robust
+  const insertDeliveryPhotoRowRobust = async (payload: any, minimalPayload: any) => {
+    const { error } = await supabase.from("delivery_photos").insert(payload);
+    if (!error) return;
+
+    const msg = String((error as any)?.message ?? "");
+    const looksLikeMissingColumn =
+      msg.toLowerCase().includes("column") || msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("schema cache");
+
+    if (looksLikeMissingColumn) {
+      const { error: e2 } = await supabase.from("delivery_photos").insert(minimalPayload);
+      if (!e2) return;
+      throw e2;
+    }
+
+    throw error;
+  };
+
   const uploadAssets = async (assets: ImagePicker.ImagePickerAsset[]) => {
     const session = await requireSession();
     if (!session) return;
@@ -331,14 +571,16 @@ export default function UploadScreen() {
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택/확인해야 업로드가 가능합니다.");
     if (!assets || assets.length === 0) return;
 
-    let wp = (myWorkPart ?? "").trim();
-    if (!wp) {
-      try {
-        wp = await loadMyWorkPart(session.user.id);
-      } catch {
-        wp = "";
-      }
-    }
+    const day = kstNowDateString();
+    const wp = (myWorkPart ?? "").trim();
+
+    const cat: any = isDriver ? driverCategory : "field";
+
+    const plannedDate = isDriver && driverCategory === "miochul" ? miochulPlanned.trim() : null;
+    const detail = isDriver && driverCategory === "miochul" ? miochulDetail.trim() : null;
+    const flagsPicked = isDriver && driverCategory === "miochul" ? miochulFlagLabels(miochulFlags) : [];
+
+    const carNoForMeta = isDriver && carPick?.kind === "car" ? carPick.carNo : null;
 
     setBusy(true);
     try {
@@ -353,33 +595,74 @@ export default function UploadScreen() {
 
         try {
           const contentType = guessContentType(uri);
-
-          const day = kstNowDateString();
           const fileName = makeSafeFileName();
-          const path = `${selectedStore.store_code}/${day}/${fileName}`;
 
+          const path = `${cat}/${selectedStore.store_code}/${day}/${fileName}`;
           const ab = await uriToArrayBuffer(uri);
 
-          const { error: upErr } = await supabase.storage.from("photos").upload(path, ab, {
+          const targetBucket = isDriver ? "delivery_photos" : "photos";
+
+          const { error: upErr } = await supabase.storage.from(targetBucket).upload(path, ab, {
             contentType,
             upsert: false,
           });
           if (upErr) throw upErr;
 
-          const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
+          const { data: pub } = supabase.storage.from(targetBucket).getPublicUrl(path);
           const publicUrl = pub.publicUrl;
 
-          const payload: any = {
-            user_id: session.user.id,
-            store_code: selectedStore.store_code,
-            original_path: path,
-            original_url: publicUrl,
-            status: "public" as const,
-            work_part: wp || null,
-          };
+          if (isDriver) {
+            const mioMemo =
+              driverCategory === "miochul"
+                ? `[${flagsPicked.join(", ")}] 납품예정:${plannedDate ?? "-"} / 상세:${detail ?? ""}`
+                : null;
 
-          const { error: insErr } = await supabase.from("photos").insert(payload);
-          if (insErr) throw insErr;
+            const payload: any = {
+              work_date: day,
+              car_no: carNoForMeta ? String(carNoForMeta) : null,
+              store_code: selectedStore.store_code,
+              store_name: selectedStore.store_name,
+              memo: mioMemo,
+              bucket: targetBucket,
+              path,
+              public_url: publicUrl,
+              created_by: session.user.id,
+            };
+
+            const minimal: any = {
+              store_code: selectedStore.store_code,
+              path,
+              public_url: publicUrl,
+              created_by: session.user.id,
+            };
+
+            await insertDeliveryPhotoRowRobust(payload, minimal);
+          } else {
+            const payload: any = {
+              user_id: session.user.id,
+              store_code: selectedStore.store_code,
+              original_path: path,
+              original_url: publicUrl,
+              status: "public" as const,
+              work_part: wp || null,
+
+              category: cat,
+              car_no: carNoForMeta,
+              delivery_planned_date: plannedDate,
+              extra_note: detail,
+            };
+
+            const minimal: any = {
+              user_id: session.user.id,
+              store_code: selectedStore.store_code,
+              original_path: path,
+              original_url: publicUrl,
+              status: "public" as const,
+              work_part: wp || null,
+            };
+
+            await insertPhotoRowRobust(payload, minimal);
+          }
 
           ok++;
         } catch (e: any) {
@@ -388,7 +671,10 @@ export default function UploadScreen() {
         }
       }
 
-      if (ok > 0) await loadDoneStoresForToday(wp);
+      if (ok > 0) {
+        if (isDriver) await loadDoneStoresForToday(wp, driverCategory);
+        else await loadDoneStoresForToday(wp);
+      }
 
       if (fail === 0) Alert.alert("완료", `업로드 성공: ${ok}장`);
       else if (ok === 0) Alert.alert("업로드 실패", `성공 0장 / 실패 ${fail}장\n\n첫 실패:\n${reasons[0]}`);
@@ -401,9 +687,9 @@ export default function UploadScreen() {
   const uploadQueue = async () => {
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택하세요.");
     if (queueAssets.length === 0) return Alert.alert("경고", "업로드할 사진이 없습니다. 먼저 추가/촬영하세요.");
+    if (!ensureMiochulFieldsOk()) return;
 
-    const count = queueAssets.length;
-    Alert.alert("업로드", `${count}장을 업로드할까요?`, [
+    Alert.alert("업로드", `${queueAssets.length}장을 업로드할까요?`, [
       { text: "취소", style: "cancel" },
       {
         text: "업로드",
@@ -415,27 +701,33 @@ export default function UploadScreen() {
     ]);
   };
 
-  const showWorkPartButton = myWorkPart === "관리자";
+  const showWorkPartButton = myWorkPart === "관리자" && !isDriver;
 
-  const filteredInspectStores = useMemo(() => {
-    const q = inspectQuery.trim().toLowerCase();
-    if (!q) return inspectStores;
+  const driverDropdownOptions: CarPick[] = useMemo(() => {
+    if (!isDriver) return [];
+    const list = carNos ?? [];
 
-    return inspectStores.filter((s) => {
-      const code = (s.store_code ?? "").toLowerCase();
-      const name = (s.store_name ?? "").toLowerCase();
-      const car = String(s.car_no ?? "");
-      const seq = String(s.seq_no ?? "");
-      return code.includes(q) || name.includes(q) || car.includes(q) || seq.includes(q);
-    });
-  }, [inspectStores, inspectQuery]);
+    if (list.length === 1) {
+      return [
+        { kind: "car", carNo: list[0], label: String(list[0]) },
+        { kind: "support", label: "지원" },
+      ];
+    }
+    if (list.length >= 2) {
+      return [...list.map((n) => ({ kind: "car" as const, carNo: n, label: String(n) })), { kind: "support" as const, label: "지원" }];
+    }
+    return [{ kind: "support", label: "지원" }];
+  }, [isDriver, carNos]);
+
+  const isSupport = isDriver && carPick?.kind === "support";
 
   const selectedLine = selectedStore
     ? `${selectedStore.car_no ?? "-"}-${selectedStore.seq_no ?? "-"} / ${selectedStore.store_code} / ${selectedStore.store_name}`
     : "점포를 선택하세요";
 
   const renderStoreRow = (item: StoreMapRow) => {
-    const isDoneToday = doneStoreSet.has(item.store_code);
+    const doneKey = isDriver ? `${item.store_code}:${driverCategory}` : item.store_code;
+    const isDoneToday = doneStoreSet.has(doneKey);
     const isSelected = selectedStore?.store_code === item.store_code;
 
     return (
@@ -479,338 +771,608 @@ export default function UploadScreen() {
     );
   };
 
+  const mioPicked = miochulFlagLabels(miochulFlags);
+  const miochulSummary =
+    miochulPlanned && mioPicked.length > 0
+      ? `납품예정일 ${miochulPlanned} / ${mioPicked.join(", ")}${miochulDetail.trim() ? " / 상세 있음" : ""}`
+      : "미오출 정보 미설정";
+
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <View style={[styles.headerWrap, { paddingTop: topPad }]}>
-        <View style={styles.headerTopRow}>
-          <Text style={styles.headerTitleLeft}>사진 업로드</Text>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={keyboardOffset}
+      >
+        {/* ✅ 여기서 터치 시작 시 키보드만 내림(터치 먹지 않음) */}
+        <View style={{ flex: 1 }} onTouchStart={() => Keyboard.dismiss()}>
+          <View style={[styles.headerWrap, { paddingTop: topPad }]}>
+            <View style={styles.headerTopRow}>
+              <Text style={styles.headerTitleLeft}>{isDriver ? "기사 업로드" : "사진 업로드"}</Text>
 
-          <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 10 }}>
-            {(doneLoading || inspectLoading) && <ActivityIndicator />}
+              <View style={{ marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 10 }}>
+                {(doneLoading || inspectLoading || driverLoading || supportBusy) && <ActivityIndicator />}
 
-            {showWorkPartButton && (
-              <Pressable
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setSelectedWorkPartInModal(myWorkPart || "");
-                  setWorkPartModalOpen(true);
-                }}
-                style={[styles.headerChip, busy && { opacity: 0.6 }]}
-                disabled={busy}
-              >
-                <Ionicons name="settings-outline" size={16} color={THEME.blue} />
-                <Text style={styles.headerChipText}>작업파트 설정</Text>
-              </Pressable>
+                {isDriver ? (
+                  <Pressable onPress={() => setCarDropdownOpen(true)} disabled={busy} style={[styles.headerChip, busy && { opacity: 0.6 }]}>
+                    <Ionicons name="bus-outline" size={16} color={THEME.blue} />
+                    <Text style={styles.headerChipText}>{carPick?.label ?? "호차"}</Text>
+                    <Ionicons name="chevron-down" size={14} color={THEME.blue} />
+                  </Pressable>
+                ) : null}
+
+                {showWorkPartButton && (
+                  <Pressable
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setSelectedWorkPartInModal(myWorkPart || "");
+                      setWorkPartModalOpen(true);
+                    }}
+                    style={[styles.headerChip, busy && { opacity: 0.6 }]}
+                    disabled={busy}
+                  >
+                    <Ionicons name="settings-outline" size={16} color={THEME.blue} />
+                    <Text style={styles.headerChipText}>작업파트 설정</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+
+            <Text style={styles.h2}>
+              {isDriver ? (
+                <>
+                  {isSupport ? (
+                    <>
+                      <Text style={{ fontWeight: "900" }}>지원</Text> 모드: 점포 검색 → 점포 선택 →{" "}
+                      <Text style={{ fontWeight: "900" }}>{categoryLabel(driverCategory)}</Text> 사진 업로드{" "}
+                      {driverCategory === "miochul" ? "(미오출 정보 필요)" : ""}.
+                    </>
+                  ) : (
+                    <>
+                      호차 점포 → 점포 선택 → <Text style={{ fontWeight: "900" }}>{categoryLabel(driverCategory)}</Text> 사진 업로드{" "}
+                      {driverCategory === "miochul" ? "(미오출 정보 필요)" : ""}.
+                    </>
+                  )}{" "}
+                  <Text style={{ color: THEME.subtext, fontWeight: "800" }}>(작업파트: {myWorkPart || "-"})</Text>
+                </>
+              ) : (
+                <>
+                  점포 선택 → 사진 추가 → 업로드. <Text style={{ color: THEME.subtext, fontWeight: "800" }}>(작업파트: {myWorkPart || "-"})</Text>
+                </>
+              )}
+            </Text>
+
+            {isDriver ? (
+              <View style={styles.cardCompact}>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {(["bottle", "tobacco", "miochul"] as DriverCategory[]).map((c) => {
+                    const on = driverCategory === c;
+                    return (
+                      <Pressable
+                        key={c}
+                        onPress={async () => {
+                          setDriverCategory(c);
+                          const wp = (myWorkPart ?? "").trim();
+                          if (wp) await loadDoneStoresForToday(wp, c);
+                        }}
+                        style={[
+                          styles.catPill,
+                          {
+                            borderColor: on ? categoryColor(c) : THEME.border,
+                            backgroundColor: on ? THEME.soft : THEME.surface,
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.catPillText, { color: on ? categoryColor(c) : THEME.text }]}>{categoryLabel(c)}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {/* ✅ 미오출 설정 버튼: 이제 정상 클릭됨 */}
+                {driverCategory === "miochul" ? (
+                  <View style={{ marginTop: 10, flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <Pressable
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setMiochulModalOpen(true);
+                      }}
+                      style={[styles.headerChip, { borderColor: "rgba(124,58,237,0.25)", backgroundColor: THEME.purpleSoft }]}
+                    >
+                      <Ionicons name="calendar-outline" size={16} color={THEME.purple} />
+                      <Text style={[styles.headerChipText, { color: THEME.purple }]}>미오출 설정</Text>
+                      <Ionicons name="chevron-forward" size={14} color={THEME.purple} />
+                    </Pressable>
+
+                    <Text style={{ flex: 1, color: THEME.subtext, fontWeight: "800", fontSize: 12 }} numberOfLines={1}>
+                      {miochulSummary}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {isSupport ? (
+                  <View style={{ marginTop: 10, gap: 10 }}>
+                    <View style={styles.inputWrap}>
+                      <Ionicons name="search-outline" size={18} color={THEME.subtext} />
+                      <TextInput
+                        value={supportQuery}
+                        onChangeText={setSupportQuery}
+                        placeholder="지원: 점포코드 또는 점포명 검색"
+                        placeholderTextColor={THEME.muted}
+                        style={styles.input}
+                        returnKeyType="search"
+                        onSubmitEditing={doSupportStoreSearch}
+                      />
+                      {!!supportQuery && (
+                        <Pressable onPress={() => setSupportQuery("")} style={{ padding: 6 }} hitSlop={8}>
+                          <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                        </Pressable>
+                      )}
+                    </View>
+
+                    <TouchableOpacity onPress={doSupportStoreSearch} disabled={supportBusy || busy} style={[styles.btn, styles.btnPrimary, (supportBusy || busy) && styles.dim]}>
+                      <View style={styles.btnInner}>
+                        <Ionicons name="search-outline" size={18} color="#fff" />
+                        <Text style={styles.btnTextWhite}>{supportBusy ? "검색중..." : "검색"}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+            ) : (
+              <>
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setMode("search");
+                      setStoreResults([]);
+                    }}
+                    style={[styles.segBtn, mode === "search" && styles.segBtnOn]}
+                  >
+                    <Text style={[styles.segText, mode === "search" && styles.segTextOn]}>검색 선택</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={async () => {
+                      Keyboard.dismiss();
+                      setMode("inspect");
+                      setInspectQuery("");
+                      await loadInspectStores();
+                    }}
+                    style={[styles.segBtn, mode === "inspect" && styles.segBtnOn]}
+                  >
+                    <Text style={[styles.segText, mode === "inspect" && styles.segTextOn]}>검수 점포</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.card}>
+                  {mode === "search" ? (
+                    <>
+                      <Text style={styles.cardTitle}>점포 검색</Text>
+
+                      <View style={styles.inputWrap}>
+                        <Ionicons name="search-outline" size={18} color={THEME.subtext} />
+                        <TextInput
+                          value={query}
+                          onChangeText={setQuery}
+                          placeholder="점포코드 또는 점포명 검색"
+                          placeholderTextColor={THEME.muted}
+                          style={styles.input}
+                          returnKeyType="search"
+                          onSubmitEditing={doStoreSearch}
+                        />
+                        {!!query && (
+                          <Pressable onPress={() => setQuery("")} style={{ padding: 6 }} hitSlop={8}>
+                            <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                          </Pressable>
+                        )}
+                      </View>
+
+                      <TouchableOpacity onPress={doStoreSearch} disabled={busy} style={[styles.btn, styles.btnPrimary, busy && styles.dim]}>
+                        <View style={styles.btnInner}>
+                          <Ionicons name="search-outline" size={18} color="#fff" />
+                          <Text style={styles.btnTextWhite}>{busy ? "검색중..." : "검색"}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.cardTitle}>검수 점포 목록</Text>
+
+                      <View style={styles.inputWrap}>
+                        <Ionicons name="search-outline" size={18} color={THEME.subtext} />
+                        <TextInput
+                          value={inspectQuery}
+                          onChangeText={setInspectQuery}
+                          placeholder="검색: 점포코드/점포명/호차/순번"
+                          placeholderTextColor={THEME.muted}
+                          style={styles.input}
+                        />
+                        {!!inspectQuery && (
+                          <Pressable onPress={() => setInspectQuery("")} style={{ padding: 6 }} hitSlop={8}>
+                            <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                          </Pressable>
+                        )}
+                      </View>
+
+                      <TouchableOpacity onPress={loadInspectStores} disabled={inspectLoading || busy} style={[styles.btn, styles.btnPrimary, (inspectLoading || busy) && styles.dim]}>
+                        <View style={styles.btnInner}>
+                          <Ionicons name="refresh" size={18} color="#fff" />
+                          <Text style={styles.btnTextWhite}>{inspectLoading ? "불러오는 중..." : "검수 점포 새로고침"}</Text>
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  )}
+
+                  {(busy || inspectLoading) && <ActivityIndicator style={{ marginTop: 10 }} />}
+                </View>
+              </>
             )}
           </View>
-        </View>
 
-        <Text style={styles.h2}>
-          점포 선택 → 사진 추가 → 업로드.{" "}
-          <Text style={{ color: THEME.subtext, fontWeight: "800" }}>(작업파트: {myWorkPart || "-"})</Text>
-        </Text>
-
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-          <TouchableOpacity
-            onPress={() => {
-              Keyboard.dismiss();
-              setMode("search");
-              setStoreResults([]);
-            }}
-            style={[styles.segBtn, mode === "search" && styles.segBtnOn]}
-          >
-            <Text style={[styles.segText, mode === "search" && styles.segTextOn]}>검색 선택</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={async () => {
-              Keyboard.dismiss();
-              setMode("inspect");
-              setInspectQuery("");
-              await loadInspectStores();
-            }}
-            style={[styles.segBtn, mode === "inspect" && styles.segBtnOn]}
-          >
-            <Text style={[styles.segText, mode === "inspect" && styles.segTextOn]}>검수 점포</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.card}>
-          {mode === "search" ? (
-            <>
-              <Text style={styles.cardTitle}>점포 검색</Text>
-
-              <View style={styles.inputWrap}>
-                <Ionicons name="search-outline" size={18} color={THEME.subtext} />
-                <TextInput
-                  value={query}
-                  onChangeText={setQuery}
-                  placeholder="점포코드 또는 점포명 검색"
-                  placeholderTextColor={THEME.muted}
-                  style={styles.input}
-                  returnKeyType="search"
-                  onSubmitEditing={doStoreSearch}
+          {/* ✅ 리스트 영역 */}
+          <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: listReserveBottom }}>
+            <View style={styles.listBox}>
+              {isDriver ? (
+                isSupport ? (
+                  <FlatList
+                    data={supportResults}
+                    keyExtractor={(item) => item.store_code}
+                    keyboardShouldPersistTaps="handled"
+                    ListEmptyComponent={
+                      <View style={{ padding: 14 }}>
+                        <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
+                      </View>
+                    }
+                    renderItem={({ item }) => renderStoreRow(item)}
+                  />
+                ) : driverLoading ? (
+                  <View style={{ padding: 16 }}>
+                    <ActivityIndicator />
+                  </View>
+                ) : (
+                  <FlatList
+                    data={driverStores}
+                    keyExtractor={(item) => item.store_code}
+                    keyboardShouldPersistTaps="handled"
+                    ListEmptyComponent={
+                      <View style={{ padding: 14 }}>
+                        <Text style={{ color: THEME.subtext, fontWeight: "800" }}>호차 점포가 없습니다.</Text>
+                      </View>
+                    }
+                    renderItem={({ item }) => renderStoreRow(item)}
+                  />
+                )
+              ) : mode === "search" ? (
+                <FlatList
+                  data={storeResults}
+                  keyExtractor={(item) => item.store_code}
+                  keyboardShouldPersistTaps="handled"
+                  ListEmptyComponent={
+                    <View style={{ padding: 14 }}>
+                      <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
+                    </View>
+                  }
+                  renderItem={({ item }) => renderStoreRow(item)}
                 />
-                {!!query && (
-                  <Pressable onPress={() => setQuery("")} style={{ padding: 6 }} hitSlop={8}>
-                    <Ionicons name="close-circle" size={18} color={THEME.muted} />
-                  </Pressable>
-                )}
-              </View>
-
-              <TouchableOpacity onPress={doStoreSearch} disabled={busy} style={[styles.btn, styles.btnPrimary, busy && styles.dim]}>
-                <View style={styles.btnInner}>
-                  <Ionicons name="search-outline" size={18} color="#fff" />
-                  <Text style={styles.btnTextWhite}>{busy ? "검색중..." : "검색"}</Text>
+              ) : inspectLoading ? (
+                <View style={{ padding: 16 }}>
+                  <ActivityIndicator />
                 </View>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <>
-              <Text style={styles.cardTitle}>검수 점포 목록</Text>
-
-              <View style={styles.inputWrap}>
-                <Ionicons name="search-outline" size={18} color={THEME.subtext} />
-                <TextInput
-                  value={inspectQuery}
-                  onChangeText={setInspectQuery}
-                  placeholder="검색: 점포코드/점포명/호차/순번"
-                  placeholderTextColor={THEME.muted}
-                  style={styles.input}
+              ) : (
+                <FlatList
+                  data={inspectStores.filter((s) => {
+                    const q = inspectQuery.trim().toLowerCase();
+                    if (!q) return true;
+                    const code = (s.store_code ?? "").toLowerCase();
+                    const name = (s.store_name ?? "").toLowerCase();
+                    const car = String(s.car_no ?? "");
+                    const seq = String(s.seq_no ?? "");
+                    return code.includes(q) || name.includes(q) || car.includes(q) || seq.includes(q);
+                  })}
+                  keyExtractor={(item) => item.store_code}
+                  keyboardShouldPersistTaps="handled"
+                  ListEmptyComponent={
+                    <View style={{ padding: 14 }}>
+                      <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검수 점포 결과가 없습니다.</Text>
+                    </View>
+                  }
+                  renderItem={({ item }) => renderStoreRow(item)}
                 />
-                {!!inspectQuery && (
-                  <Pressable onPress={() => setInspectQuery("")} style={{ padding: 6 }} hitSlop={8}>
-                    <Ionicons name="close-circle" size={18} color={THEME.muted} />
-                  </Pressable>
-                )}
-              </View>
-
-              <TouchableOpacity
-                onPress={loadInspectStores}
-                disabled={inspectLoading || busy}
-                style={[styles.btn, styles.btnPrimary, (inspectLoading || busy) && styles.dim]}
-              >
-                <View style={styles.btnInner}>
-                  <Ionicons name="refresh" size={18} color="#fff" />
-                  <Text style={styles.btnTextWhite}>{inspectLoading ? "불러오는 중..." : "검수 점포 새로고침"}</Text>
-                </View>
-              </TouchableOpacity>
-            </>
-          )}
-
-          {(busy || inspectLoading) && <ActivityIndicator style={{ marginTop: 10 }} />}
-        </View>
-      </View>
-
-      {/* ✅ 리스트 영역은 bottomWrap을 "절대배치"로 띄웠기 때문에, paddingBottom으로만 예약 */}
-      <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: listReserveBottom }}>
-        <View style={styles.listBox}>
-          {mode === "search" ? (
-            <FlatList
-              data={storeResults}
-              keyExtractor={(item) => item.store_code}
-              keyboardShouldPersistTaps="handled"
-              ListEmptyComponent={
-                <View style={{ padding: 14 }}>
-                  <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
-                </View>
-              }
-              renderItem={({ item }) => renderStoreRow(item)}
-            />
-          ) : inspectLoading ? (
-            <View style={{ padding: 16 }}>
-              <ActivityIndicator />
-            </View>
-          ) : (
-            <FlatList
-              data={filteredInspectStores}
-              keyExtractor={(item) => item.store_code}
-              keyboardShouldPersistTaps="handled"
-              ListEmptyComponent={
-                <View style={{ padding: 14 }}>
-                  <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검수 점포 결과가 없습니다.</Text>
-                </View>
-              }
-              renderItem={({ item }) => renderStoreRow(item)}
-            />
-          )}
-        </View>
-      </View>
-
-      {/* ✅ bottomWrap: absolute로 띄우고 탭바 높이만큼 bottom을 올림 */}
-      <View
-        style={[
-          styles.bottomWrapFloating,
-          {
-            bottom: tabBarHeight,
-            paddingBottom: bottomPad,
-          },
-        ]}
-      >
-        <View style={styles.bottomHeader}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.bottomHeaderTitle} numberOfLines={1}>
-              {selectedLine}
-            </Text>
-            <Text style={styles.bottomHeaderSub}>대기 {queueCount}장</Text>
-          </View>
-
-          <Pressable
-            onPress={clearQueue}
-            disabled={busy || queueCount === 0}
-            style={[styles.clearPill, (busy || queueCount === 0) && styles.dim]}
-            hitSlop={8}
-          >
-            <Ionicons name="trash-outline" size={14} color={THEME.danger} />
-            <Text style={styles.clearPillText}>전체삭제</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.queueCard}>
-          {queueCount === 0 ? (
-            <View style={styles.queueEmpty}>
-              <Ionicons name="images-outline" size={18} color={THEME.muted} />
-              <Text style={styles.queueEmptyText}>대기 사진이 없습니다. (갤러리/카메라로 추가)</Text>
-            </View>
-          ) : (
-            <FlatList
-              data={queueAssets}
-              keyExtractor={(item) => item.uri}
-              horizontal
-              keyboardShouldPersistTaps="handled"
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: 10, paddingVertical: 4 }}
-              renderItem={({ item }) => (
-                <View style={{ width: 78 }}>
-                  <Image source={{ uri: item.uri }} style={styles.queueThumb} />
-                  <Pressable onPress={() => removeFromQueue(item.uri)} disabled={busy} style={[styles.thumbDelete, busy && styles.dim]}>
-                    <Ionicons name="close" size={14} color={THEME.text} />
-                    <Text style={styles.thumbDeleteText}>삭제</Text>
-                  </Pressable>
-                </View>
               )}
-            />
-          )}
-        </View>
-
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <TouchableOpacity
-            onPress={pickMultiFromGalleryToQueue}
-            disabled={!selectedStore || busy}
-            style={[styles.btn, styles.btnBlue, (!selectedStore || busy) && styles.dim]}
-          >
-            <View style={styles.btnInner}>
-              <Ionicons name="images-outline" size={18} color="#fff" />
-              <Text style={styles.btnTextWhite}>갤러리 추가</Text>
             </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={takePhotoToQueue}
-            disabled={!selectedStore || busy}
-            style={[styles.btn, styles.btnOutlineBlue, (!selectedStore || busy) && styles.dim]}
-          >
-            <View style={styles.btnInner}>
-              <Ionicons name="camera-outline" size={18} color={THEME.blue} />
-              <Text style={[styles.btnText, { color: THEME.blue }]}>카메라 촬영</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity
-          onPress={uploadQueue}
-          disabled={!selectedStore || busy || queueCount === 0}
-          style={[styles.btnWide, styles.btnGreen, (!selectedStore || busy || queueCount === 0) && styles.dim]}
-        >
-          <View style={styles.btnInner}>
-            <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-            <Text style={styles.btnTextWhite}>{busy ? "업로드 중..." : `사진 업로드 (${queueCount}장)`}</Text>
           </View>
-        </TouchableOpacity>
-      </View>
 
-      <Modal visible={workPartModalOpen} transparent animationType="fade" onRequestClose={() => setWorkPartModalOpen(false)}>
-        <Pressable
-          style={styles.backdrop}
-          onPress={() => {
-            Keyboard.dismiss();
-            setWorkPartModalOpen(false);
-          }}
-        />
-        <View style={[styles.modalBox, { top: topPad + 84 }]}>
-          <View style={styles.modalHeader}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              <Ionicons name="settings-outline" size={18} color={THEME.text} />
-              <Text style={styles.modalTitle}>작업파트 설정(관리자)</Text>
+          {/* ✅ bottomWrap */}
+          <View style={[styles.bottomWrapFloating, { bottom: tabBarHeight, paddingBottom: bottomPad }]}>
+            <View style={styles.bottomHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bottomHeaderTitle} numberOfLines={1}>
+                  {selectedLine}
+                </Text>
+                <Text style={styles.bottomHeaderSub}>대기 {queueCount}장</Text>
+              </View>
+
+              <Pressable onPress={() => setQueueAssets([])} disabled={busy || queueCount === 0} style={[styles.clearPill, (busy || queueCount === 0) && styles.dim]} hitSlop={8}>
+                <Ionicons name="trash-outline" size={14} color={THEME.danger} />
+                <Text style={styles.clearPillText}>전체삭제</Text>
+              </Pressable>
             </View>
-            <Pressable onPress={() => setWorkPartModalOpen(false)} style={styles.iconBtn}>
-              <Ionicons name="close" size={18} color={THEME.text} />
-            </Pressable>
-          </View>
-          <View style={{ padding: 14, gap: 10 }}>
-            <Text style={styles.modalDesc}>회원가입 작업파트 목록에서 “기사”만 제외한 옵션입니다.</Text>
 
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-              {workPartOptions.map((o) => {
-                const selected = selectedWorkPartInModal === o.value;
-                return (
+            <View style={styles.queueCard}>
+              {queueCount === 0 ? (
+                <View style={styles.queueEmpty}>
+                  <Ionicons name="images-outline" size={18} color={THEME.muted} />
+                  <Text style={styles.queueEmptyText}>대기 사진이 없습니다. (갤러리/카메라로 추가)</Text>
+                </View>
+              ) : (
+                <FlatList
+                  data={queueAssets}
+                  keyExtractor={(item) => item.uri}
+                  horizontal
+                  keyboardShouldPersistTaps="handled"
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: 10, paddingVertical: 4 }}
+                  renderItem={({ item }) => (
+                    <View style={{ width: 78 }}>
+                      <Image source={{ uri: item.uri }} style={styles.queueThumb} />
+                      <Pressable onPress={() => removeFromQueue(item.uri)} disabled={busy} style={[styles.thumbDelete, busy && styles.dim]}>
+                        <Ionicons name="close" size={14} color={THEME.text} />
+                        <Text style={styles.thumbDeleteText}>삭제</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                />
+              )}
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <TouchableOpacity onPress={pickMultiFromGalleryToQueue} disabled={!selectedStore || busy} style={[styles.btn, styles.btnBlue, (!selectedStore || busy) && styles.dim]}>
+                <View style={styles.btnInner}>
+                  <Ionicons name="images-outline" size={18} color="#fff" />
+                  <Text style={styles.btnTextWhite}>갤러리 추가</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={takePhotoToQueue} disabled={!selectedStore || busy} style={[styles.btn, styles.btnOutlineBlue, (!selectedStore || busy) && styles.dim]}>
+                <View style={styles.btnInner}>
+                  <Ionicons name="camera-outline" size={18} color={THEME.blue} />
+                  <Text style={[styles.btnText, { color: THEME.blue }]}>카메라 촬영</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity onPress={uploadQueue} disabled={!selectedStore || busy || queueCount === 0} style={[styles.btnWide, styles.btnGreen, (!selectedStore || busy || queueCount === 0) && styles.dim]}>
+              <View style={styles.btnInner}>
+                <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                <Text style={styles.btnTextWhite}>{busy ? "업로드 중..." : `사진 업로드 (${queueCount}장)`}</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {/* ✅ 기사 호차 드롭다운 모달 */}
+          <Modal visible={carDropdownOpen} transparent animationType="fade" onRequestClose={() => setCarDropdownOpen(false)}>
+            <Pressable style={styles.backdrop} onPress={() => setCarDropdownOpen(false)} />
+            <View style={[styles.modalBox, { top: topPad + 64 }]}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>호차 선택</Text>
+                <Pressable onPress={() => setCarDropdownOpen(false)} style={styles.iconBtn}>
+                  <Ionicons name="close" size={18} color={THEME.text} />
+                </Pressable>
+              </View>
+
+              <View style={{ padding: 14, gap: 10 }}>
+                {driverDropdownOptions.map((opt, idx) => {
+                  const isOn =
+                    (carPick?.kind === opt.kind && opt.kind === "support" && carPick?.label === opt.label) ||
+                    (carPick?.kind === "car" && opt.kind === "car" && (carPick as any).carNo === (opt as any).carNo);
+
+                  return (
+                    <Pressable
+                      key={`${opt.label}-${idx}`}
+                      onPress={() => {
+                        setCarPick(opt);
+                        setCarDropdownOpen(false);
+                        setSelectedStore(null);
+                        setQueueAssets([]);
+                        setSupportResults([]);
+                      }}
+                      style={[styles.pill, isOn ? { borderColor: "rgba(37,99,235,0.55)", backgroundColor: THEME.blueSoft } : null]}
+                    >
+                      <Text style={[styles.pillText, isOn ? { color: THEME.blue } : null]}>{opt.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          </Modal>
+
+          {/* ✅ 미오출 설정 모달 (달력 + 체크 + 상세내용 + 저장) */}
+          <Modal visible={miochulModalOpen} transparent animationType="fade" onRequestClose={() => setMiochulModalOpen(false)}>
+            <Pressable style={styles.backdrop} onPress={() => setMiochulModalOpen(false)} />
+            <View style={[styles.modalBoxLarge, { top: topPad + 70 }]}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>미오출 설정</Text>
+                <Pressable onPress={() => setMiochulModalOpen(false)} style={styles.iconBtn}>
+                  <Ionicons name="close" size={18} color={THEME.text} />
+                </Pressable>
+              </View>
+
+              <View style={{ padding: 12, gap: 10 }}>
+                <Text style={{ fontWeight: "900", color: THEME.text, fontSize: 12 }}>납품예정일</Text>
+
+                <Calendar
+                  onDayPress={(day) => setMiochulPlanned(day.dateString)}
+                  markedDates={miochulPlanned ? { [miochulPlanned]: { selected: true, selectedColor: THEME.purple } } : undefined}
+                  theme={{
+                    todayTextColor: THEME.purple,
+                    arrowColor: THEME.purple,
+                  }}
+                />
+
+                <Text style={{ fontWeight: "900", color: THEME.text, fontSize: 12, marginTop: 6 }}>구분</Text>
+                <View style={{ flexDirection: "row", gap: 10 }}>
                   <Pressable
-                    key={o.value}
-                    onPress={() => setSelectedWorkPartInModal(o.value)}
+                    onPress={() => setMiochulFlags((p) => ({ ...p, redelivery: !p.redelivery }))}
                     style={[
-                      styles.pill,
-                      selected ? { borderColor: "rgba(37,99,235,0.55)", backgroundColor: THEME.blueSoft } : null,
+                      styles.flagPill,
+                      miochulFlags.redelivery ? { borderColor: "rgba(124,58,237,0.45)", backgroundColor: THEME.purpleSoft } : null,
                     ]}
                   >
-                    <Text style={[styles.pillText, selected ? { color: THEME.blue } : null]}>{o.label}</Text>
+                    <Ionicons name={miochulFlags.redelivery ? "checkbox" : "square-outline"} size={16} color={THEME.purple} />
+                    <Text style={[styles.flagText, miochulFlags.redelivery ? { color: THEME.purple } : null]}>재배송</Text>
                   </Pressable>
-                );
-              })}
+
+                  <Pressable
+                    onPress={() => setMiochulFlags((p) => ({ ...p, damage: !p.damage }))}
+                    style={[
+                      styles.flagPill,
+                      miochulFlags.damage ? { borderColor: "rgba(124,58,237,0.45)", backgroundColor: THEME.purpleSoft } : null,
+                    ]}
+                  >
+                    <Ionicons name={miochulFlags.damage ? "checkbox" : "square-outline"} size={16} color={THEME.purple} />
+                    <Text style={[styles.flagText, miochulFlags.damage ? { color: THEME.purple } : null]}>파손</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => setMiochulFlags((p) => ({ ...p, other: !p.other }))}
+                    style={[
+                      styles.flagPill,
+                      miochulFlags.other ? { borderColor: "rgba(124,58,237,0.45)", backgroundColor: THEME.purpleSoft } : null,
+                    ]}
+                  >
+                    <Ionicons name={miochulFlags.other ? "checkbox" : "square-outline"} size={16} color={THEME.purple} />
+                    <Text style={[styles.flagText, miochulFlags.other ? { color: THEME.purple } : null]}>기타</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={{ fontWeight: "900", color: THEME.text, fontSize: 12, marginTop: 6 }}>상세내용</Text>
+                <View style={[styles.inputWrap, { height: 110, alignItems: "flex-start", paddingTop: 10 }]}>
+                  <Ionicons name="document-text-outline" size={18} color={THEME.subtext} />
+                  <TextInput
+                    value={miochulDetail}
+                    onChangeText={setMiochulDetail}
+                    placeholder="상세내용을 입력하세요"
+                    placeholderTextColor={THEME.muted}
+                    style={[styles.input, { paddingTop: 0, height: 104 }]}
+                    multiline
+                  />
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+                  <Pressable
+                    onPress={() => {
+                      setMiochulPlanned("");
+                      setMiochulDetail("");
+                      setMiochulFlags({ redelivery: false, damage: false, other: false });
+                    }}
+                    style={[styles.modalBtn, styles.modalBtnGhost]}
+                  >
+                    <Text style={styles.modalBtnText}>초기화</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => {
+                      if (!/^\d{4}-\d{2}-\d{2}$/.test(miochulPlanned.trim())) return Alert.alert("미오출", "납품예정일을 선택하세요.");
+                      if (miochulFlagLabels(miochulFlags).length === 0) return Alert.alert("미오출", "재배송/파손/기타 중 최소 1개를 선택하세요.");
+                      if (miochulDetail.trim().length < 1) return Alert.alert("미오출", "상세내용을 입력하세요.");
+                      setMiochulModalOpen(false);
+                    }}
+                    style={[styles.modalBtn, { backgroundColor: THEME.purple }]}
+                  >
+                    <Text style={styles.modalBtnTextWhite}>저장</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.modalFoot}>
+                  현재: {miochulPlanned || "-"} / {miochulFlagLabels(miochulFlags).join(", ") || "-"} / 상세:{" "}
+                  {miochulDetail.trim() ? "있음" : "-"}
+                </Text>
+              </View>
             </View>
+          </Modal>
 
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
-              <Pressable onPress={() => setWorkPartModalOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={styles.modalBtnText}>취소</Text>
-              </Pressable>
+          {/* ✅ 관리자 작업파트 설정 모달 */}
+          <Modal visible={workPartModalOpen} transparent animationType="fade" onRequestClose={() => setWorkPartModalOpen(false)}>
+            <Pressable
+              style={styles.backdrop}
+              onPress={() => {
+                Keyboard.dismiss();
+                setWorkPartModalOpen(false);
+              }}
+            />
+            <View style={[styles.modalBox, { top: topPad + 84 }]}>
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                  <Ionicons name="settings-outline" size={18} color={THEME.text} />
+                  <Text style={styles.modalTitle}>작업파트 설정(관리자)</Text>
+                </View>
+                <Pressable onPress={() => setWorkPartModalOpen(false)} style={styles.iconBtn}>
+                  <Ionicons name="close" size={18} color={THEME.text} />
+                </Pressable>
+              </View>
+              <View style={{ padding: 14, gap: 10 }}>
+                <Text style={styles.modalDesc}>회원가입 작업파트 목록에서 “기사”만 제외한 옵션입니다.</Text>
 
-              <Pressable
-                onPress={async () => {
-                  const session = await requireSession();
-                  if (!session) return;
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+                  {workPartOptions.map((o) => {
+                    const selected = selectedWorkPartInModal === o.value;
+                    return (
+                      <Pressable
+                        key={o.value}
+                        onPress={() => setSelectedWorkPartInModal(o.value)}
+                        style={[styles.pill, selected ? { borderColor: "rgba(37,99,235,0.55)", backgroundColor: THEME.blueSoft } : null]}
+                      >
+                        <Text style={[styles.pillText, selected ? { color: THEME.blue } : null]}>{o.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
 
-                  const wp = (selectedWorkPartInModal ?? "").trim();
-                  if (!wp) return Alert.alert("작업파트", "작업파트를 선택하세요.");
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+                  <Pressable onPress={() => setWorkPartModalOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                    <Text style={styles.modalBtnText}>취소</Text>
+                  </Pressable>
 
-                  setBusy(true);
-                  try {
-                    const { error } = await supabase
-                      .from("profiles")
-                      .upsert({ id: session.user.id, work_part: wp }, { onConflict: "id" });
-                    if (error) throw error;
+                  <Pressable
+                    onPress={async () => {
+                      const session = await requireSession();
+                      if (!session) return;
 
-                    setMyWorkPart(wp);
-                    await loadDoneStoresForToday(wp);
-                    setWorkPartModalOpen(false);
-                    Alert.alert("완료", `작업파트가 "${wp}"로 저장되었습니다.`);
-                  } catch (e: any) {
-                    Alert.alert("작업파트 저장 실패", e?.message ?? String(e));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                disabled={busy || !selectedWorkPartInModal}
-                style={[styles.modalBtn, styles.modalBtnPrimary, (busy || !selectedWorkPartInModal) && styles.dim]}
-              >
-                <Text style={styles.modalBtnTextWhite}>{busy ? "저장 중..." : "저장"}</Text>
-              </Pressable>
+                      const wp = (selectedWorkPartInModal ?? "").trim();
+                      if (!wp) return Alert.alert("작업파트", "작업파트를 선택하세요.");
+
+                      setBusy(true);
+                      try {
+                        const { error } = await supabase.from("profiles").upsert({ id: session.user.id, work_part: wp }, { onConflict: "id" });
+                        if (error) throw error;
+
+                        setMyWorkPart(wp);
+                        await loadDoneStoresForToday(wp);
+                        setWorkPartModalOpen(false);
+                        Alert.alert("완료", `작업파트가 "${wp}"로 저장되었습니다.`);
+                      } catch (e: any) {
+                        Alert.alert("작업파트 저장 실패", e?.message ?? String(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                    disabled={busy || !selectedWorkPartInModal}
+                    style={[styles.modalBtn, styles.modalBtnPrimary, (busy || !selectedWorkPartInModal) && styles.dim]}
+                  >
+                    <Text style={styles.modalBtnTextWhite}>{busy ? "저장 중..." : "저장"}</Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.modalFoot}>
+                  현재: {myWorkPart || "-"} / 선택: {selectedWorkPartInModal || "-"}
+                </Text>
+              </View>
             </View>
-
-            <Text style={styles.modalFoot}>
-              현재: {myWorkPart || "-"} / 선택: {selectedWorkPartInModal || "-"}
-            </Text>
-          </View>
+          </Modal>
         </View>
-      </Modal>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -850,6 +1412,19 @@ const styles = StyleSheet.create({
   segBtnOn: { borderColor: "rgba(37,99,235,0.35)", backgroundColor: THEME.blueSoft },
   segText: { fontWeight: "900", color: THEME.text, fontSize: 13 },
   segTextOn: { color: THEME.blue },
+
+  cardCompact: {
+    backgroundColor: THEME.surface,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderRadius: 18,
+    padding: 12,
+    shadowColor: THEME.shadow as any,
+    shadowOpacity: 1,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+  },
 
   card: {
     backgroundColor: THEME.surface,
@@ -935,7 +1510,6 @@ const styles = StyleSheet.create({
   },
   doneText: { fontWeight: "900", color: THEME.success, fontSize: 12 },
 
-  // ✅ floating bottom 영역
   bottomWrapFloating: {
     position: "absolute",
     left: 0,
@@ -1003,6 +1577,7 @@ const styles = StyleSheet.create({
   thumbDeleteText: { fontWeight: "900", color: THEME.text, fontSize: 12 },
 
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+
   modalBox: {
     position: "absolute",
     left: 16,
@@ -1013,6 +1588,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: THEME.border,
   },
+
+  modalBoxLarge: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    backgroundColor: THEME.surface,
+    borderRadius: 18,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+
   modalHeader: {
     paddingHorizontal: 10,
     paddingVertical: 10,
@@ -1037,8 +1624,29 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  pill: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: THEME.border, backgroundColor: THEME.surface },
+  pill: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    backgroundColor: THEME.surface,
+  },
   pillText: { fontWeight: "900", color: THEME.text },
+
+  flagPill: {
+    flex: 1,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    backgroundColor: THEME.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  flagText: { fontWeight: "900", color: THEME.text, fontSize: 12 },
 
   modalBtn: { flex: 1, height: 46, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   modalBtnGhost: { borderWidth: 1, borderColor: THEME.border, backgroundColor: THEME.surface },
@@ -1046,4 +1654,7 @@ const styles = StyleSheet.create({
   modalBtnText: { fontWeight: "900", color: THEME.text },
   modalBtnTextWhite: { fontWeight: "900", color: "#fff" },
   modalFoot: { color: THEME.muted, fontSize: 11, textAlign: "center", marginTop: 6, fontWeight: "800" },
+
+  catPill: { flex: 1, height: 44, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  catPillText: { fontWeight: "900", fontSize: 13 },
 });
