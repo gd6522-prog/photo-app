@@ -18,7 +18,6 @@ import { supabase } from "../../src/lib/supabase";
 
 const KEY_AUTO_LOGIN = "hx_auto_login";
 
-// 한국 전화번호 -> E.164 (+82...)
 function toE164KR(raw: string): string | null {
   const s = raw.replace(/[^\d+]/g, "");
   if (s.startsWith("+")) {
@@ -31,7 +30,6 @@ function toE164KR(raw: string): string | null {
   return `+82${digits.slice(1)}`;
 }
 
-// ✅ 구버전 호환: phoneToEmail
 function phoneToEmail(e164: string) {
   const digits = e164.replace(/\D/g, "");
   return `p_${digits}@phone.local`;
@@ -54,6 +52,29 @@ function isInvalidCreds(err: any) {
   return msg.includes("invalid login credentials") || msg.includes("invalid credentials");
 }
 
+function mapAuthErrorToKo(err: any) {
+  const msg = String(err?.message ?? "").toLowerCase();
+
+  if (!msg) return "로그인 중 오류가 발생했습니다.";
+  if (msg.includes("invalid login credentials") || msg.includes("invalid credentials")) {
+    return "전화번호 또는 비밀번호가 올바르지 않습니다.";
+  }
+  if (msg.includes("email not confirmed") || msg.includes("phone not confirmed")) {
+    return "휴대폰 인증이 완료되지 않은 계정입니다.";
+  }
+  if (msg.includes("too many requests") || msg.includes("rate limit")) {
+    return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.";
+  }
+  if (msg.includes("network") || msg.includes("fetch failed")) {
+    return "네트워크 연결을 확인해 주세요.";
+  }
+  if (msg.includes("refresh token")) {
+    return "세션이 만료되었습니다. 다시 로그인해 주세요.";
+  }
+
+  return err?.message ?? "로그인 중 오류가 발생했습니다.";
+}
+
 export default function LoginScreen() {
   const router = useRouter();
 
@@ -61,13 +82,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
-
   const [autoLogin, setAutoLogin] = useState(true);
 
   const originalAlertRef = useRef<typeof Alert.alert | null>(null);
 
   useEffect(() => {
-    // ✅ 로그인 화면에 있는 동안만 "세션 없음" 팝업 차단
     if (!originalAlertRef.current) originalAlertRef.current = Alert.alert;
     const original = originalAlertRef.current;
 
@@ -99,10 +118,7 @@ export default function LoginScreen() {
   }, []);
 
   const e164 = useMemo(() => toE164KR(phone.trim()), [phone]);
-
-  const canSubmit = useMemo(() => {
-    return !!e164 && password.trim().length >= 6;
-  }, [e164, password]);
+  const canSubmit = useMemo(() => !!e164 && password.trim().length >= 6, [e164, password]);
 
   const toggleAutoLogin = async () => {
     const next = !autoLogin;
@@ -118,8 +134,6 @@ export default function LoginScreen() {
 
     try {
       const pw = password.trim();
-
-      // 1) ✅ phone 로그인 먼저 시도
       let data: any = null;
       let err: any = null;
 
@@ -130,7 +144,6 @@ export default function LoginScreen() {
       data = r1.data;
       err = r1.error;
 
-      // 2) ❌ phone에서 invalid credentials면 구버전 email로 fallback
       if (err && isInvalidCreds(err)) {
         const email = phoneToEmail(e164!);
         const r2 = await supabase.auth.signInWithPassword({
@@ -142,9 +155,8 @@ export default function LoginScreen() {
       }
 
       if (err) throw err;
-      if (!data?.user) throw new Error("로그인 세션 생성 실패");
+      if (!data?.user) throw new Error("로그인 세션을 만들지 못했습니다.");
 
-      // 승인 체크
       const { data: prof, error: pErr } = await supabase
         .from("profiles")
         .select("approval_status")
@@ -158,10 +170,8 @@ export default function LoginScreen() {
         Alert.alert("승인 대기", "관리자 승인 후 로그인할 수 있습니다.");
         return;
       }
-
-      // ✅ 이동은 AuthGate가 담당
     } catch (err: any) {
-      Alert.alert("로그인 실패", err?.message ?? String(err));
+      Alert.alert("로그인 실패", mapAuthErrorToKo(err));
     } finally {
       setLoading(false);
     }
@@ -169,10 +179,7 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{
@@ -207,9 +214,7 @@ export default function LoginScreen() {
               elevation: 2,
             }}
           >
-            <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>
-              로그인
-            </Text>
+            <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>로그인</Text>
 
             <View style={{ gap: 6 }}>
               <Text style={{ color: "#374151", fontWeight: "800" }}>전화번호</Text>
@@ -264,34 +269,45 @@ export default function LoginScreen() {
                   style={{ paddingLeft: 10, paddingVertical: 10 }}
                   disabled={loading}
                 >
-                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>
-                    {showPw ? "숨김" : "표시"}
-                  </Text>
+                  <Text style={{ color: "#2563EB", fontWeight: "900" }}>{showPw ? "숨김" : "표시"}</Text>
                 </Pressable>
               </View>
             </View>
 
-            <Pressable
-              onPress={toggleAutoLogin}
-              disabled={loading}
-              style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 2 }}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginTop: 2,
+              }}
             >
-              <View
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 6,
-                  borderWidth: 2,
-                  borderColor: autoLogin ? "#2563EB" : "#CBD5E1",
-                  backgroundColor: autoLogin ? "#2563EB" : "#FFFFFF",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
+              <Pressable
+                onPress={toggleAutoLogin}
+                disabled={loading}
+                style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
               >
-                {autoLogin ? <Text style={{ color: "#fff", fontWeight: "900" }}>✓</Text> : null}
-              </View>
-              <Text style={{ color: "#111827", fontWeight: "900" }}>자동로그인</Text>
-            </Pressable>
+                <View
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 6,
+                    borderWidth: 2,
+                    borderColor: autoLogin ? "#2563EB" : "#CBD5E1",
+                    backgroundColor: autoLogin ? "#2563EB" : "#FFFFFF",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {autoLogin ? <Text style={{ color: "#fff", fontWeight: "900" }}>✓</Text> : null}
+                </View>
+                <Text style={{ color: "#111827", fontWeight: "900" }}>자동로그인</Text>
+              </Pressable>
+
+              <Pressable onPress={() => router.push("/(auth)/reset-password" as any)} disabled={loading}>
+                <Text style={{ color: "#2563EB", fontWeight: "900" }}>비밀번호 재설정</Text>
+              </Pressable>
+            </View>
 
             <Pressable
               onPress={onLogin}
@@ -308,7 +324,7 @@ export default function LoginScreen() {
               {loading ? (
                 <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
                   <ActivityIndicator color="#fff" />
-                  <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중</Text>
+                  <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중...</Text>
                 </View>
               ) : (
                 <Text style={{ color: "#fff", fontWeight: "900" }}>로그인</Text>
@@ -318,7 +334,7 @@ export default function LoginScreen() {
             <Pressable
               onPress={() => router.push("/(auth)/signup" as any)}
               disabled={loading}
-              style={{ alignItems: "center", paddingVertical: 8 }}
+              style={{ alignItems: "center", paddingVertical: 4 }}
             >
               <Text style={{ color: "#2563EB", fontWeight: "900" }}>회원가입</Text>
             </Pressable>

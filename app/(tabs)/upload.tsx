@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  useWindowDimensions,
   FlatList,
   Image,
   Keyboard,
@@ -159,14 +160,23 @@ export default function UploadScreen() {
 
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
+  const { height: windowHeight } = useWindowDimensions();
+  // 하단 고정 패널을 너무 위로 띄우지 않도록 오프셋을 낮춘다.
+  // 탭바/홈 인디케이터에 가리지 않는 최소값만 보장.
+  const bottomDockOffset = Math.max(tabBarHeight - 30, 46);
   const topPad = Math.min(Math.max(insets.top, 6), 18) + 4;
 
   const bottomPad = Math.max(insets.bottom, 2) + 10;
-  const BOTTOM_EST_HEIGHT = 300;
-  const listReserveBottom = tabBarHeight + bottomPad + BOTTOM_EST_HEIGHT;
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(300);
+  const listReserveBottom = bottomDockOffset + bottomPad + bottomPanelHeight + 120;
 
   // ✅ 키보드 올라올 때 밀어올릴 기준 (탭바/세이프영역 고려)
   const keyboardOffset = tabBarHeight + Math.max(insets.bottom, 0);
+  const resultsBoxHeight = useMemo(() => {
+    // ScrollView 내부 flex 축소 이슈를 피하기 위해 기기 높이 기반으로 결과 영역 높이를 고정 계산
+    const estimated = windowHeight - (isDriver ? 610 : 640);
+    return Math.max(180, Math.min(330, estimated));
+  }, [windowHeight, isDriver]);
 
   // ===== 공통 =====
   const [selectedStore, setSelectedStore] = useState<StoreMapRow | null>(null);
@@ -818,30 +828,6 @@ export default function UploadScreen() {
               </View>
             </View>
 
-            <Text style={styles.h2}>
-              {isDriver ? (
-                <>
-                  {isSupport ? (
-                    <>
-                      <Text style={{ fontWeight: "900" }}>지원</Text> 모드: 점포 검색 → 점포 선택 →{" "}
-                      <Text style={{ fontWeight: "900" }}>{categoryLabel(driverCategory)}</Text> 사진 업로드{" "}
-                      {driverCategory === "miochul" ? "(미오출 정보 필요)" : ""}.
-                    </>
-                  ) : (
-                    <>
-                      호차 점포 → 점포 선택 → <Text style={{ fontWeight: "900" }}>{categoryLabel(driverCategory)}</Text> 사진 업로드{" "}
-                      {driverCategory === "miochul" ? "(미오출 정보 필요)" : ""}.
-                    </>
-                  )}{" "}
-                  <Text style={{ color: THEME.subtext, fontWeight: "800" }}>(작업파트: {myWorkPart || "-"})</Text>
-                </>
-              ) : (
-                <>
-                  점포 선택 → 사진 추가 → 업로드. <Text style={{ color: THEME.subtext, fontWeight: "800" }}>(작업파트: {myWorkPart || "-"})</Text>
-                </>
-              )}
-            </Text>
-
             {isDriver ? (
               <View style={styles.cardCompact}>
                 <View style={{ flexDirection: "row", gap: 10 }}>
@@ -1012,14 +998,16 @@ export default function UploadScreen() {
           </View>
 
           {/* ✅ 리스트 영역 */}
-          <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: listReserveBottom }}>
-            <View style={styles.listBox}>
+          <View style={{ paddingHorizontal: 16, paddingBottom: listReserveBottom }}>
+            <View style={[styles.listBox, { height: resultsBoxHeight }]}>
               {isDriver ? (
                 isSupport ? (
                   <FlatList
                     data={supportResults}
                     keyExtractor={(item) => item.store_code}
+                    nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={{ paddingBottom: 18 }}
                     ListEmptyComponent={
                       <View style={{ padding: 14 }}>
                         <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
@@ -1035,7 +1023,9 @@ export default function UploadScreen() {
                   <FlatList
                     data={driverStores}
                     keyExtractor={(item) => item.store_code}
+                    nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={{ paddingBottom: 18 }}
                     ListEmptyComponent={
                       <View style={{ padding: 14 }}>
                         <Text style={{ color: THEME.subtext, fontWeight: "800" }}>호차 점포가 없습니다.</Text>
@@ -1048,7 +1038,9 @@ export default function UploadScreen() {
                 <FlatList
                   data={storeResults}
                   keyExtractor={(item) => item.store_code}
+                  nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingBottom: 18 }}
                   ListEmptyComponent={
                     <View style={{ padding: 14 }}>
                       <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
@@ -1072,7 +1064,9 @@ export default function UploadScreen() {
                     return code.includes(q) || name.includes(q) || car.includes(q) || seq.includes(q);
                   })}
                   keyExtractor={(item) => item.store_code}
+                  nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingBottom: 18 }}
                   ListEmptyComponent={
                     <View style={{ padding: 14 }}>
                       <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검수 점포 결과가 없습니다.</Text>
@@ -1085,7 +1079,13 @@ export default function UploadScreen() {
           </View>
 
           {/* ✅ bottomWrap */}
-          <View style={[styles.bottomWrapFloating, { bottom: tabBarHeight, paddingBottom: bottomPad }]}>
+          <View
+            onLayout={(e) => {
+              const h = Math.ceil(e.nativeEvent.layout.height);
+              if (h > 0 && h !== bottomPanelHeight) setBottomPanelHeight(h);
+            }}
+            style={[styles.bottomWrapFloating, { bottom: bottomDockOffset, paddingBottom: bottomPad }]}
+          >
             <View style={styles.bottomHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.bottomHeaderTitle} numberOfLines={1}>
@@ -1474,7 +1474,6 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     overflow: "hidden",
     backgroundColor: THEME.surface,
-    flex: 1,
   },
 
   row: {

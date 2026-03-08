@@ -32,15 +32,14 @@ function corsPreflight() {
   });
 }
 
-function makeTitle(comment: string) {
-  const c = (comment || "").trim();
-  if (!c) return "위험요인 제보";
-  return c.length > 20 ? `위험요인: ${c.slice(0, 20)}…` : `위험요인: ${c}`;
+function makeNotifyBody(reporterName: string) {
+  const who = (reporterName || "").trim() || "사용자";
+  return `${who}님이 위험요인을 제보했습니다. 확인 바랍니다.`;
 }
 
-function buildMessages(tokens: string[], payload: Body) {
-  const title = makeTitle(payload.comment || "");
-  const body = (payload.comment || "새 위험요인 제보가 등록되었습니다.").trim();
+function buildMessages(tokens: string[], payload: Body, reporterName: string) {
+  const title = "알림";
+  const body = makeNotifyBody(reporterName);
 
   return tokens.map((to) => ({
     to,
@@ -58,7 +57,6 @@ function buildMessages(tokens: string[], payload: Body) {
 }
 
 async function sendExpoPush(messages: any[]) {
-  // Expo Push API
   const res = await fetch("https://exp.host/--/api/v2/push/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -86,33 +84,48 @@ Deno.serve(async (req) => {
 
     const payload = (await req.json().catch(() => ({}))) as Body;
 
-    // ✅ 관리자 전원(is_admin=true) 토큰 가져오기
+    let reporterName = "";
+    if (payload.created_by) {
+      const { data: reporter } = await supabase
+        .from("profiles")
+        .select("name")
+        .eq("id", payload.created_by)
+        .maybeSingle();
+      reporterName = String((reporter as any)?.name ?? "").trim();
+    }
+
+    // 대상:
+    // 1) 권한 관리자 (is_admin = true)
+    // 2) 작업파트 관리자 (work_part = "관리자")
     const { data: admins, error: adminErr } = await supabase
       .from("profiles")
-      .select("id, expo_push_token")
-      .eq("is_admin", true)
+      .select("id, expo_push_token, is_admin, work_part")
+      .or("is_admin.eq.true,work_part.eq.관리자")
       .not("expo_push_token", "is", null);
 
     if (adminErr) {
       return json(500, { error: "Failed to fetch admin tokens", detail: adminErr.message });
     }
 
-    const tokens = (admins || [])
-      .map((r: any) => String(r.expo_push_token || "").trim())
-      .filter((t) => t.startsWith("ExponentPushToken[") || t.startsWith("ExpoPushToken["));
+    const tokens = Array.from(
+      new Set(
+        (admins || [])
+          .map((r: any) => String(r.expo_push_token || "").trim())
+          .filter((t) => t.startsWith("ExponentPushToken[") || t.startsWith("ExpoPushToken["))
+      )
+    );
 
     if (tokens.length === 0) {
       return json(200, { ok: true, sent: 0, reason: "no_admin_tokens" });
     }
 
-    // ✅ Expo는 한번에 너무 많이 보내면 안 좋아서 90개씩 쪼갬(안전)
     const CHUNK = 90;
     const results: any[] = [];
     let sent = 0;
 
     for (let i = 0; i < tokens.length; i += CHUNK) {
       const chunk = tokens.slice(i, i + CHUNK);
-      const messages = buildMessages(chunk, payload);
+      const messages = buildMessages(chunk, payload, reporterName);
 
       const r = await sendExpoPush(messages);
       results.push(r);
@@ -123,6 +136,7 @@ Deno.serve(async (req) => {
       ok: true,
       adminCountWithToken: tokens.length,
       sent,
+      reporterName: reporterName || null,
       results,
     });
   } catch (e: any) {

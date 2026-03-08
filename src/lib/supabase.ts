@@ -11,7 +11,9 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage: AsyncStorage,
     persistSession: true,
-    autoRefreshToken: true,
+    // Invalid refresh token이 저장돼 있어도 시작 시 LogBox가 뜨지 않게 자동 갱신은 끈다.
+    // 세션이 유효하면 그대로 사용되고, 만료된 경우 로그인 화면으로 유도된다.
+    autoRefreshToken: false,
     detectSessionInUrl: false,
   },
 });
@@ -20,12 +22,12 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 (async () => {
   const cleanIfBadRefreshToken = async (msg: string) => {
     if (!msg) return false;
+    const lower = msg.toLowerCase();
     const hit =
-      msg.includes("Invalid Refresh Token") ||
-      msg.includes("Refresh Token Not Found") ||
-      msg.includes("Refresh token not found") ||
-      msg.includes("refresh token") ||
-      msg.includes("refresh_token");
+      lower.includes("invalid refresh token") ||
+      lower.includes("refresh token not found") ||
+      lower.includes("refresh token") ||
+      lower.includes("refresh_token");
     if (!hit) return false;
 
     // 세션 정리 + 스토리지 정리

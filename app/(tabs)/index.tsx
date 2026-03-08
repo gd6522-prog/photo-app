@@ -55,9 +55,10 @@ const THEME = {
 
 const CENTER_LAT = 37.0778566841938;
 const CENTER_LNG = 126.954553958864;
-const MAX_DISTANCE_M = 1000;
+const MAX_DISTANCE_M = 250;
+const WEEKDAYS_KO = ["일", "월", "화", "수", "목", "금", "토"] as const;
 
-const ALLOW_FALLBACK_CLOCK = true;
+const ALLOW_FALLBACK_CLOCK = false;
 const GPS_TOTAL_TIMEOUT_MS = 25000;
 const PUSH_NOTIFY_TIMEOUT_MS = 12000;
 
@@ -84,6 +85,21 @@ function formatKSTTime(ts?: string | null) {
   const HH = String(kst.getUTCHours()).padStart(2, "0");
   const MI = String(kst.getUTCMinutes()).padStart(2, "0");
   return `${HH}:${MI}`;
+}
+
+function shiftYmd(ymd: string, days: number) {
+  const [y, m, d] = ymd.split("-").map((v) => Number(v));
+  if (!y || !m || !d) return ymd;
+  const t = Date.UTC(y, m - 1, d) + days * 24 * 60 * 60 * 1000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+function formatKstDateLabel(ymd: string) {
+  const [y, m, d] = ymd.split("-").map((v) => Number(v));
+  if (!y || !m || !d) return ymd;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const wd = WEEKDAYS_KO[dt.getUTCDay()];
+  return `${y}.${String(m).padStart(2, "0")}.${String(d).padStart(2, "0")}(${wd})`;
 }
 
 async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
@@ -264,6 +280,7 @@ export default function MainMenu() {
 
   const [attLoading, setAttLoading] = useState(false);
   const [att, setAtt] = useState<AttendanceRow | null>(null);
+  const [selectedWorkDate, setSelectedWorkDate] = useState<string>(kstNowDateString());
 
   const [clockInConfirmOpen, setClockInConfirmOpen] = useState(false);
   const [clockOutConfirmOpen, setClockOutConfirmOpen] = useState(false);
@@ -372,8 +389,8 @@ export default function MainMenu() {
     }
   }, [user]);
 
-  /** ✅ 오늘 출퇴근 조회: work_shifts */
-  const loadTodayAttendance = useCallback(async () => {
+  /** ✅ 선택 날짜 출퇴근 조회: work_shifts */
+  const loadAttendanceForDate = useCallback(async (workDate: string) => {
     const session = await requireSession();
     if (!session) return;
 
@@ -386,7 +403,7 @@ export default function MainMenu() {
             "id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
           )
           .eq("user_id", session.user.id)
-          .eq("work_date", kstNowDateString())
+          .eq("work_date", workDate)
           .maybeSingle(),
         12000,
         "출퇴근 조회"
@@ -434,16 +451,19 @@ export default function MainMenu() {
   useEffect(() => {
     loadAdmin();
     loadProfileName();
-    loadTodayAttendance();
     registerPushTokenForThisUser();
-  }, [loadAdmin, loadProfileName, loadTodayAttendance, registerPushTokenForThisUser]);
+  }, [loadAdmin, loadProfileName, registerPushTokenForThisUser]);
+
+  useEffect(() => {
+    loadAttendanceForDate(selectedWorkDate);
+  }, [loadAttendanceForDate, selectedWorkDate]);
 
   useFocusEffect(
     useCallback(() => {
       loadAdmin();
-      loadTodayAttendance();
+      loadAttendanceForDate(selectedWorkDate);
       return () => {};
-    }, [loadAdmin, loadTodayAttendance])
+    }, [loadAdmin, loadAttendanceForDate, selectedWorkDate])
   );
 
   const goUpload = () => router.push("/(tabs)/upload");
@@ -499,6 +519,28 @@ export default function MainMenu() {
     if (!uri) return;
 
     setReportPhotos((prev) => [...prev, uri]);
+  };
+
+  const pickReportPhotoFromGallery = async () => {
+    Keyboard.dismiss();
+
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("권한 필요", "갤러리 접근 권한을 허용해주세요.");
+      return;
+    }
+
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      selectionLimit: 0,
+      quality: 0.9,
+    });
+
+    if (picked.canceled) return;
+    const uris = (picked.assets ?? []).map((a) => a.uri).filter(Boolean);
+    if (uris.length === 0) return;
+    setReportPhotos((prev) => [...prev, ...uris]);
   };
 
   const removePhotoAt = (idx: number) => {
@@ -686,7 +728,7 @@ export default function MainMenu() {
       }
 
       if (dist > MAX_DISTANCE_M) {
-        Alert.alert("범위 밖", `센터 기준 1km 이내에서만 가능합니다.\n현재 거리: ${Math.round(dist)}m`);
+        Alert.alert("범위 밖", "센터 범위 밖에서는 출퇴근 처리할 수 없습니다.");
         return null;
       }
 
@@ -791,7 +833,7 @@ export default function MainMenu() {
       setAtt(((res as any).data as AttendanceRow) ?? null);
 
       Alert.alert("출근 완료", `출근: ${formatKSTTime(nowIso)}`);
-      loadTodayAttendance().catch(() => {});
+      loadAttendanceForDate(selectedWorkDate).catch(() => {});
     } catch (e: any) {
       Alert.alert("출근 실패", e?.message ?? String(e));
     } finally {
@@ -799,7 +841,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, getCurrentLocationChecked, requireSession, loadTodayAttendance, startWatchdog, stopWatchdog]);
+  }, [att, busy, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   /** ✅ 퇴근: work_shifts + work_events */
   const doClockOut = useCallback(async () => {
@@ -885,7 +927,7 @@ export default function MainMenu() {
       setAtt(((res as any).data as AttendanceRow) ?? null);
 
       Alert.alert("퇴근 완료", `퇴근: ${formatKSTTime(nowIso)}`);
-      loadTodayAttendance().catch(() => {});
+      loadAttendanceForDate(selectedWorkDate).catch(() => {});
     } catch (e: any) {
       Alert.alert("퇴근 실패", e?.message ?? String(e));
     } finally {
@@ -893,7 +935,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, getCurrentLocationChecked, requireSession, loadTodayAttendance, startWatchdog, stopWatchdog]);
+  }, [att, busy, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   const onClockIn = () => {
     if (busy) return;
@@ -919,6 +961,9 @@ export default function MainMenu() {
 
   const approveRowVisible = useMemo(() => !loadingAdmin && isAdmin, [loadingAdmin, isAdmin]);
   const todayStr = kstNowDateString();
+  const selectedDateLabel = useMemo(() => formatKstDateLabel(selectedWorkDate), [selectedWorkDate]);
+  const isViewingToday = selectedWorkDate === todayStr;
+  const canGoNextDay = selectedWorkDate < todayStr;
 
   const ActionButton = ({
     onPress,
@@ -999,28 +1044,60 @@ export default function MainMenu() {
                 <Text style={styles.cardTitle}>출퇴근</Text>
               </View>
 
-              <View style={styles.pill}>
-                <MaterialCommunityIcons name="map-marker-radius-outline" size={14} color={THEME.subtext} />
-                <Text style={styles.pillText}>1km</Text>
-              </View>
             </View>
 
-            <Text style={styles.helper}>기준 좌표 1km 이내에서만 가능합니다.</Text>
-
-            <View style={styles.twoCols}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.label}>오늘({todayStr}) 출근</Text>
-                <Text style={styles.timeValue}>{formatKSTTime(att?.clock_in_at)}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.label}>오늘({todayStr}) 퇴근</Text>
-                <Text style={styles.timeValue}>{formatKSTTime(att?.clock_out_at)}</Text>
-              </View>
+            <View style={styles.attDateNav}>
+              <Pressable
+                onPress={() => setSelectedWorkDate((p) => shiftYmd(p, -1))}
+                disabled={busy}
+                style={[styles.attDateArrowBtn, busy && styles.btnDisabled]}
+              >
+                <Ionicons name="chevron-back" size={22} color={THEME.subtext} />
+              </Pressable>
+              <Text style={styles.attDateText}>{selectedDateLabel}</Text>
+              <Pressable
+                onPress={() => setSelectedWorkDate((p) => shiftYmd(p, +1))}
+                disabled={busy || !canGoNextDay}
+                style={[styles.attDateArrowBtn, (busy || !canGoNextDay) && styles.btnDisabled]}
+              >
+                <Ionicons name="chevron-forward" size={22} color={THEME.subtext} />
+              </Pressable>
             </View>
 
-            <View style={styles.rowGap}>
-              <ActionButton onPress={onClockIn} disabled={busy} iconLib="mci" icon="login" title="출근" variant="success" />
-              <ActionButton onPress={onClockOut} disabled={busy} iconLib="mci" icon="logout" title="퇴근" variant="primary" />
+            <View style={styles.attPunchRow}>
+              <Pressable
+                onPress={onClockIn}
+                disabled={busy || !isViewingToday || !!att?.clock_in_at}
+                style={[
+                  styles.attPunchBtn,
+                  styles.attPunchBtnIn,
+                  (busy || !isViewingToday || !!att?.clock_in_at) && styles.btnDisabled,
+                ]}
+              >
+                <View style={styles.btnInner}>
+                  <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
+                  <Text style={att?.clock_in_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                    {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : "출근"}
+                  </Text>
+                </View>
+              </Pressable>
+
+              <Pressable
+                onPress={onClockOut}
+                disabled={busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at}
+                style={[
+                  styles.attPunchBtn,
+                  styles.attPunchBtnOut,
+                  (busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at) && styles.btnDisabled,
+                ]}
+              >
+                <View style={styles.btnInner}>
+                  <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
+                  <Text style={att?.clock_out_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                    {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : "퇴근"}
+                  </Text>
+                </View>
+              </Pressable>
             </View>
 
             {attLoading ? (
@@ -1210,16 +1287,29 @@ export default function MainMenu() {
                 </View>
               )}
 
-              <Pressable
-                onPress={takeReportPhoto}
-                disabled={reportUploading}
-                style={[styles.btn, styles.btnPrimary, reportUploading && styles.btnDisabled]}
-              >
-                <View style={styles.btnInner}>
-                  <Ionicons name="camera-outline" size={18} color="#fff" />
-                  <Text style={styles.btnTextWhite}>사진 촬영 추가 ({reportPhotos.length}장)</Text>
-                </View>
-              </Pressable>
+              <View style={styles.rowGap}>
+                <Pressable
+                  onPress={pickReportPhotoFromGallery}
+                  disabled={reportUploading}
+                  style={[styles.btn, styles.btnOutline, reportUploading && styles.btnDisabled]}
+                >
+                  <View style={styles.btnInner}>
+                    <Ionicons name="images-outline" size={18} color={THEME.text} />
+                    <Text style={styles.btnText}>갤러리 추가</Text>
+                  </View>
+                </Pressable>
+
+                <Pressable
+                  onPress={takeReportPhoto}
+                  disabled={reportUploading}
+                  style={[styles.btn, styles.btnPrimary, reportUploading && styles.btnDisabled]}
+                >
+                  <View style={styles.btnInner}>
+                    <Ionicons name="camera-outline" size={18} color="#fff" />
+                    <Text style={styles.btnTextWhite}>카메라 촬영</Text>
+                  </View>
+                </Pressable>
+              </View>
 
               <View style={{ gap: 6 }}>
                 <Text style={styles.labelStrong}>코멘트</Text>
@@ -1309,6 +1399,45 @@ const styles = StyleSheet.create({
 
   helper: { color: THEME.subtext, fontSize: 12, lineHeight: 16 },
   helperSmall: { color: THEME.subtext, fontSize: 11, marginTop: 2 },
+
+  attDateNav: {
+    height: 64,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    backgroundColor: THEME.soft,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  attDateArrowBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attDateText: {
+    color: "#4B5563",
+    fontWeight: "800",
+    fontSize: 20,
+    letterSpacing: -0.2,
+  },
+
+  attPunchRow: { flexDirection: "row", gap: 12 },
+  attPunchBtn: {
+    flex: 1,
+    height: 54,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attPunchBtnIn: { backgroundColor: "#ECFDF3", borderColor: "#A7F3D0" },
+  attPunchBtnOut: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
+  attPunchTimeText: { color: "#111827", fontWeight: "800", fontSize: 18, letterSpacing: -0.1 },
+  attPunchIdleText: { color: "#374151", fontWeight: "800", fontSize: 16, letterSpacing: -0.1 },
 
   twoCols: { flexDirection: "row", gap: 12 },
   label: { color: "#374151", fontWeight: "700", fontSize: 12 },
