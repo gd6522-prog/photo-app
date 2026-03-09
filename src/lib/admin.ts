@@ -61,14 +61,13 @@ export async function getPendingCount(): Promise<number> {
   // approve 대상 테이블/조건은 너 프로젝트 기준이 있으니 기존 코드 있으면 그걸로 쓰는 게 맞음.
   // 안전하게 0 반환만 기본 제공.
   try {
-    const { data, error } = await supabase
+    const { count, error } = await supabase
       .from("profiles")
       .select("id", { count: "exact", head: true })
       .eq("approval_status", "pending");
 
     if (error) return 0;
-    // @ts-ignore
-    return (data as any)?.length ? (data as any).length : 0;
+    return Number.isFinite(count as any) ? Number(count) : 0;
   } catch {
     return 0;
   }

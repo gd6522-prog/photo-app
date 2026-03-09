@@ -30,7 +30,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { getPendingCount, isAdminUser } from "../../src/lib/admin";
 import { useAuth } from "../../src/lib/auth";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -61,6 +61,7 @@ const WEEKDAYS_KO = ["일", "월", "화", "수", "목", "금", "토"] as const;
 const ALLOW_FALLBACK_CLOCK = false;
 const GPS_TOTAL_TIMEOUT_MS = 25000;
 const PUSH_NOTIFY_TIMEOUT_MS = 12000;
+const PUSH_NOTIFY_MAX_ATTEMPTS = 3;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -139,6 +140,80 @@ async function withTimeout<T>(p: PromiseLike<T>, ms = 12000, label = "요청"): 
     Promise.resolve(p as any) as Promise<T>,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} 시간초과`)), ms)),
   ]);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type HazardPushPayload = {
+  report_id: string;
+  comment: string;
+  photo_url: string | null;
+  created_by: string;
+};
+
+function assertPushDelivered(data: any) {
+  const sent = Number((data as any)?.sent ?? 0);
+  const ok = Boolean((data as any)?.ok);
+  const reason = String((data as any)?.reason ?? "");
+  if (ok && sent > 0) return data;
+  if (reason === "no_admin_tokens") throw new Error("No admin push token.");
+  throw new Error("Push was not sent.");
+}
+
+async function sendHazardPushDirect(payload: HazardPushPayload) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+  };
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/send-hazard-push`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as any)?.error || `HTTP ${res.status}`);
+  return assertPushDelivered(data);
+}
+
+async function sendHazardPushWithRetry(
+  payload: HazardPushPayload,
+  maxAttempts = PUSH_NOTIFY_MAX_ATTEMPTS
+) {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const directData = await withTimeout(
+        sendHazardPushDirect(payload),
+        PUSH_NOTIFY_TIMEOUT_MS,
+        "push notification direct"
+      );
+      return directData;
+    } catch (directErr) {
+      lastError = directErr;
+    }
+
+    try {
+      const res = await withTimeout(
+        supabase.functions.invoke("send-hazard-push", { body: payload }),
+        PUSH_NOTIFY_TIMEOUT_MS,
+        "push notification"
+      );
+
+      if ((res as any)?.error) throw (res as any).error;
+      return assertPushDelivered((res as any)?.data ?? {});
+    } catch (invokeErr) {
+      lastError = invokeErr || lastError;
+      if (attempt < maxAttempts) await sleep(500 * attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Push failed");
 }
 
 async function getPositionByWatching(ms: number, accuracy: Location.LocationAccuracy) {
@@ -615,17 +690,32 @@ export default function MainMenu() {
       const reportId = (insRepRes as any).data?.id as string;
       if (!reportId) throw new Error("report id 생성 실패");
 
+      let pushFailed = false;
+      let pushErrorMsg = "";
       try {
-        await withTimeout(
-          supabase.functions.invoke("send-hazard-push", {
-            body: { report_id: reportId, comment, photo_url: firstUrl, created_by: userId },
-          }),
-          PUSH_NOTIFY_TIMEOUT_MS,
-          "관리자 알림"
-        );
-      } catch {}
+        await sendHazardPushWithRetry({
+          report_id: reportId,
+          comment,
+          photo_url: firstUrl,
+          created_by: userId,
+        });
+      } catch (pushErr: any) {
+        pushFailed = true;
+        pushErrorMsg = String(pushErr?.message ?? pushErr ?? "").trim();
+        console.warn("[hazard-push] failed", pushErrorMsg);
+      }
 
-      Alert.alert("제보 완료", "위험요인 제보가 접수되었습니다. 감사합니다!");
+      if (pushFailed) {
+        Alert.alert(
+          "Report Saved",
+          `Report was saved, but admin push notification failed.${pushErrorMsg ? `\n\nReason: ${pushErrorMsg}` : ""}`
+        );
+      } else {
+        Alert.alert(
+          "위험요인 제보 성공",
+          "000님 위험요인 제보 감사합니다. 빠르게 개선 진행하겠습니다."
+        );
+      }
       setReportOpen(false);
       setReportPhotos([]);
       setReportComment("");
@@ -1488,10 +1578,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  badgeHot: { backgroundColor: THEME.orangeSoft, borderWidth: 1, borderColor: THEME.orangeBorder },
+  badgeHot: { backgroundColor: "#EAF2FF", borderWidth: 1, borderColor: "#8CB3FF" },
   badgeIdle: { backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border },
   badgeText: { fontWeight: "900" },
-  badgeTextHot: { color: THEME.orange },
+  badgeTextHot: { color: "#1E3A8A" },
   badgeTextIdle: { color: THEME.text },
 
   footnote: { color: THEME.muted, fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },

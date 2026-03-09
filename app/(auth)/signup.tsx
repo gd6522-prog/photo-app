@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 import { localeFromNationality, setLocale } from "../../src/lib/locale";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { getWorkPartOptionsIncludeDriver, Option } from "../../src/lib/workParts";
 
 // ✅ 작업파트: 기존 + 임시직 추가
@@ -265,11 +265,28 @@ export default function SignupScreen() {
 
   const canCheckPhone = !!e164 && !loading && !otpSent && !checkingPhone;
   const canSendOtp = formOk && !loading && !otpSent;
-  const canVerify = !!lockedE164 && otp.trim().length >= 4 && !loading && otpSent;
+  const canVerify = formOk && !!lockedE164 && otp.trim().length >= 4 && !loading && otpSent;
 
   const hardSignOut = async () => {
     try {
       await supabase.auth.signOut();
+    } catch {}
+  };
+
+  const cleanupIncompleteSignup = async (accessToken?: string | null) => {
+    const token = String(accessToken ?? "").trim();
+    if (!token) return;
+
+    try {
+      await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action: "cleanup_incomplete_signup" }),
+      });
     } catch {}
   };
 
@@ -388,8 +405,13 @@ export default function SignupScreen() {
     if (!canVerify) return;
 
     setLoading(true);
+    let cleanupToken = "";
     try {
       const e164Fixed = lockedE164!;
+      if (name.trim().length < 2) throw new Error("이름을 2글자 이상 입력해 주세요.");
+      if (!birthOk) throw new Error("생년월일 8자리를 정확히 입력해 주세요.");
+      if (!workPart.trim()) throw new Error("작업파트를 선택해 주세요.");
+      if (!passOk) throw new Error("비밀번호를 다시 확인해 주세요.");
       if (!nationalityOk) throw new Error("국적을 입력/선택해주세요.");
 
       const lang = localeFromNationality(nationality === "KR" ? "KR" : "ETC");
@@ -403,6 +425,7 @@ export default function SignupScreen() {
       if (otpErr) throw otpErr;
 
       const userId = otpData?.user?.id;
+      cleanupToken = String(otpData?.session?.access_token ?? "");
       if (!userId) throw new Error("OTP 인증은 됐는데 user id를 못 받았어요.");
 
       if (otpData?.session) {
@@ -477,6 +500,7 @@ export default function SignupScreen() {
         Alert.alert("가입 완료", "승인 대기 상태입니다. 승인되면 로그인 가능합니다.");
       }, 50);
     } catch (err: any) {
+      await cleanupIncompleteSignup(cleanupToken);
       await hardSignOut();
       Alert.alert("가입 실패", err?.message ?? JSON.stringify(err));
     } finally {

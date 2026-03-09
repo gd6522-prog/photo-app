@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Alert, FlatList, Pressable, SafeAreaView, Text, View, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { isAdminUser, getPendingCount } from "../../src/lib/admin";
 
 type Row = {
@@ -51,20 +51,45 @@ export default function ApproveScreen() {
     load();
   }, [load]);
 
+  const rejectAndDeleteUser = useCallback(async (userId: string) => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+
+    const accessToken = String(data.session?.access_token ?? "").trim();
+    if (!accessToken) throw new Error("관리자 세션이 없습니다.");
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ action: "reject_delete_user", user_id: userId }),
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((payload as any)?.error || "반려 삭제 실패");
+  }, []);
+
   const setStatus = useCallback(async (userId: string, status: "approved" | "rejected") => {
     try {
-      const { error } = await supabase.rpc("admin_set_approval", {
-        p_user_id: userId,
-        p_status: status,
-      });
-      if (error) throw error;
+      if (status === "rejected") {
+        await rejectAndDeleteUser(userId);
+      } else {
+        const { error } = await supabase.rpc("admin_set_approval", {
+          p_user_id: userId,
+          p_status: status,
+        });
+        if (error) throw error;
+      }
 
       setRows((prev) => prev.filter((r) => r.id !== userId));
       setPendingCount((prev) => Math.max(0, prev - 1));
     } catch (e: any) {
       Alert.alert("처리 실패", e?.message ?? "승인/반려 실패");
     }
-  }, []);
+  }, [rejectAndDeleteUser]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
