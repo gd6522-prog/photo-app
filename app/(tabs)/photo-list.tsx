@@ -1,4 +1,4 @@
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+﻿import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -50,17 +50,29 @@ const THEME = {
   purple: "#7C3AED",
 };
 
-type DriverCategory = "bottle" | "tobacco" | "miochul";
+type DriverCategory = "bottle" | "tobacco" | "miochul" | "wash";
 
 function categoryLabel(c: DriverCategory) {
   if (c === "bottle") return "공병";
   if (c === "tobacco") return "담배";
-  return "미오출";
+  if (c === "miochul") return "미오출";
+  return "세차";
 }
 function categoryColor(c: DriverCategory) {
   if (c === "bottle") return THEME.blue;
   if (c === "tobacco") return THEME.amber;
-  return THEME.purple;
+  if (c === "miochul") return THEME.purple;
+  return "#0F766E";
+}
+
+function getDriverCategoryPath(category: DriverCategory, washStage: 1 | 2) {
+  if (category === "wash") return `wash${washStage}`;
+  return category;
+}
+
+function getDriverCategoryDisplay(category: DriverCategory, washStage: 1 | 2) {
+  if (category === "wash") return `세차 ${washStage}차`;
+  return categoryLabel(category);
 }
 
 type StoreMapRow = {
@@ -79,6 +91,8 @@ type PhotoRow = {
   original_url: string;
   store_code: string;
   work_part?: string | null;
+  store_name?: string | null;
+  bucket?: string | null;
 
   // ✅ 기사 분류/미오출 정보(있을 수도 / 없을 수도)
   category?: string | null;
@@ -171,11 +185,11 @@ function safeFileNameFromUrl(url: string) {
   }
 }
 
-function buildStoreTitle(meta: StoreMapRow | SelectedStore | undefined, fallbackCode: string) {
+function buildStoreTitle(meta: StoreMapRow | SelectedStore | undefined, fallbackCode: string, fallbackName = "") {
   const car = meta?.car_no ?? "-";
   const seq = meta?.seq_no ?? "-";
   const code = (meta as any)?.store_code ?? fallbackCode;
-  const name = meta?.store_name ?? "";
+  const name = meta?.store_name ?? fallbackName;
   return `${car} - ${seq}  ${code} ${name}`.trim();
 }
 
@@ -199,6 +213,7 @@ export default function PhotoListScreen() {
   // ✅ 기사면 강제로 “내것만” + 기사 카테고리 탭으로
   const [isDriver, setIsDriver] = useState(false);
   const [driverCategory, setDriverCategory] = useState<DriverCategory>("bottle");
+  const [washStage, setWashStage] = useState<1 | 2>(1);
 
   // 기존 토글 (기사일 때는 숨김/무시)
   const [onlyMine, setOnlyMine] = useState(false);
@@ -222,6 +237,8 @@ export default function PhotoListScreen() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState("");
   const [previewItems, setPreviewItems] = useState<PhotoRow[]>([]);
+  const driverPathCategory = getDriverCategoryPath(driverCategory, washStage);
+  const driverDisplayCategory = getDriverCategoryDisplay(driverCategory, washStage);
 
   const [inspectModalOpen, setInspectModalOpen] = useState(false);
   const [inspectQuery, setInspectQuery] = useState("");
@@ -343,21 +360,67 @@ export default function PhotoListScreen() {
     try {
       const { startUTC, endUTC } = kstRangeUTC(d);
 
-      let q = supabase
-        .from("photos")
-        .select(
-          "id, user_id, created_at, status, original_path, original_url, store_code, work_part, category, delivery_planned_date, extra_note"
-        )
-        .gte("created_at", startUTC)
-        .lt("created_at", endUTC)
-        .order("created_at", { ascending: false });
-
-      // ✅ 기사 모드: 검색 기능 없음 / 본인만 / 기사 3종만 / 카테고리 탭 필터
       if (isDriver) {
-        q = q.eq("user_id", session.user.id);
-        q = (q as any).in("category", ["bottle", "tobacco", "miochul"]);
-        q = (q as any).eq("category", driverCategory);
+        const { data, error } = await supabase
+          .from("delivery_photos")
+          .select("id, created_at, store_code, store_name, memo, bucket, path, public_url, created_by")
+          .eq("created_by", session.user.id)
+          .gte("created_at", startUTC)
+          .lt("created_at", endUTC)
+          .ilike("path", `${driverPathCategory}/%`)
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        const rows: PhotoRow[] = ((data ?? []) as any[]).map((r) => {
+          const memo = String(r?.memo ?? "");
+          const plannedDateMatch = memo.match(/납품예정:([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+          const detailMatch = memo.match(/상세:(.*)$/);
+          return {
+            id: String(r.id),
+            user_id: String(r.created_by ?? session.user.id),
+            created_at: String(r.created_at),
+            status: "public",
+            original_path: String(r.path ?? ""),
+            original_url: String(r.public_url ?? ""),
+            store_code: String(r.store_code ?? ""),
+            store_name: String(r.store_name ?? ""),
+            bucket: String(r.bucket ?? "delivery_photos"),
+            category: driverPathCategory,
+            delivery_planned_date: plannedDateMatch?.[1] ?? null,
+            extra_note: detailMatch?.[1]?.trim() ?? null,
+          };
+        });
+
+        setPhotos(rows);
+
+        const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
+        if (codes.length === 0) {
+          setStoreMeta({});
+        } else {
+          const { data: meta, error: metaErr } = await supabase
+            .from("store_map")
+            .select("store_code, store_name, car_no, seq_no")
+            .in("store_code", codes);
+
+          if (!metaErr) {
+            const map: Record<string, StoreMapRow> = {};
+            for (const r of (meta ?? []) as StoreMapRow[]) map[r.store_code] = r;
+            setStoreMeta(map);
+          } else {
+            setStoreMeta({});
+          }
+        }
       } else {
+        let q = supabase
+          .from("photos")
+          .select(
+            "id, user_id, created_at, status, original_path, original_url, store_code, work_part, category, delivery_planned_date, extra_note"
+          )
+          .gte("created_at", startUTC)
+          .lt("created_at", endUTC)
+          .order("created_at", { ascending: false });
+
         // ✅ 기존: 1) 검수점포 선택이 있으면 store_code 필터
         if (selectedStore?.store_code) {
           q = q.eq("store_code", selectedStore.store_code);
@@ -398,29 +461,29 @@ export default function PhotoListScreen() {
             else q = q.eq("user_id", session.user.id);
           }
         }
-      }
 
-      const { data, error } = await q;
-      if (error) throw error;
+        const { data, error } = await q;
+        if (error) throw error;
 
-      const rows = (data ?? []) as PhotoRow[];
-      setPhotos(rows);
+        const rows = (data ?? []) as PhotoRow[];
+        setPhotos(rows);
 
-      const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
-      if (codes.length === 0) {
-        setStoreMeta({});
-      } else {
-        const { data: meta, error: metaErr } = await supabase
-          .from("store_map")
-          .select("store_code, store_name, car_no, seq_no")
-          .in("store_code", codes);
-
-        if (!metaErr) {
-          const map: Record<string, StoreMapRow> = {};
-          for (const r of (meta ?? []) as StoreMapRow[]) map[r.store_code] = r;
-          setStoreMeta(map);
-        } else {
+        const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
+        if (codes.length === 0) {
           setStoreMeta({});
+        } else {
+          const { data: meta, error: metaErr } = await supabase
+            .from("store_map")
+            .select("store_code, store_name, car_no, seq_no")
+            .in("store_code", codes);
+
+          if (!metaErr) {
+            const map: Record<string, StoreMapRow> = {};
+            for (const r of (meta ?? []) as StoreMapRow[]) map[r.store_code] = r;
+            setStoreMeta(map);
+          } else {
+            setStoreMeta({});
+          }
         }
       }
 
@@ -440,7 +503,7 @@ export default function PhotoListScreen() {
       await fetchList();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [driverCategory, isDriver]);
+  }, [driverPathCategory, isDriver]);
 
   const groupedByStore = useMemo(() => {
     const groups: Record<string, PhotoRow[]> = {};
@@ -471,20 +534,41 @@ export default function PhotoListScreen() {
 
     setBusy(true);
     try {
-      const { data, error } = await supabase.from("photos").select("id, original_path").in("id", ids);
-      if (error) throw error;
+      if (isDriver) {
+        const { data, error } = await supabase.from("delivery_photos").select("id, path, created_by").in("id", ids);
+        if (error) throw error;
 
-      const paths = (data ?? [])
-        .map((r: any) => r.original_path)
-        .filter((x: any) => typeof x === "string" && x.length > 0);
+        const deletableRows = ((data ?? []) as any[]).filter((row) => String(row?.created_by ?? "") === session.user.id);
+        const deletableIds = deletableRows.map((row) => String(row.id));
+        const paths = deletableRows
+          .map((row) => row.path)
+          .filter((x: any) => typeof x === "string" && x.length > 0 && !String(x).startsWith("meta://"));
 
-      if (paths.length > 0) {
-        const { error: rmErr } = await supabase.storage.from("photos").remove(paths);
-        if (rmErr) throw rmErr;
+        if (paths.length > 0) {
+          const { error: rmErr } = await supabase.storage.from("delivery_photos").remove(paths);
+          if (rmErr) throw rmErr;
+        }
+
+        if (deletableIds.length > 0) {
+          const { error: delErr } = await supabase.from("delivery_photos").delete().in("id", deletableIds);
+          if (delErr) throw delErr;
+        }
+      } else {
+        const { data, error } = await supabase.from("photos").select("id, original_path").in("id", ids);
+        if (error) throw error;
+
+        const paths = (data ?? [])
+          .map((r: any) => r.original_path)
+          .filter((x: any) => typeof x === "string" && x.length > 0);
+
+        if (paths.length > 0) {
+          const { error: rmErr } = await supabase.storage.from("photos").remove(paths);
+          if (rmErr) throw rmErr;
+        }
+
+        const { error: delErr } = await supabase.from("photos").delete().in("id", ids);
+        if (delErr) throw delErr;
       }
-
-      const { error: delErr } = await supabase.from("photos").delete().in("id", ids);
-      if (delErr) throw delErr;
 
       return true;
     } catch (e: any) {
@@ -521,7 +605,7 @@ export default function PhotoListScreen() {
     if (!grp) return;
 
     const meta = storeMeta[store_code];
-    const title = buildStoreTitle(meta, store_code);
+    const title = buildStoreTitle(meta, store_code, grp.items[0]?.store_name ?? "");
 
     setPreviewTitle(title);
     setPreviewItems(grp.items);
@@ -592,7 +676,7 @@ export default function PhotoListScreen() {
   const filterBadge = useMemo(() => {
     // ✅ 기사 모드 badge는 간단하게
     if (isDriver) {
-      return `📅 ${dateStr} · 👤 내 업로드 · 🧾 ${categoryLabel(driverCategory)}`;
+      return `📅 ${dateStr} · 👤 내 업로드 · 🧾 ${driverDisplayCategory}`;
     }
 
     const parts: string[] = [];
@@ -603,7 +687,7 @@ export default function PhotoListScreen() {
     else if (onlyMine) parts.push("👤 내것만");
     else if (myWorkPart) parts.push(`👥 ${myWorkPart}`);
     return parts.join(" · ");
-  }, [dateStr, selectedStore, searchText, isAdmin, adminSeeAll, onlyMine, myWorkPart, isDriver, driverCategory]);
+  }, [dateStr, selectedStore, searchText, isAdmin, adminSeeAll, onlyMine, myWorkPart, isDriver, driverDisplayCategory]);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -643,7 +727,7 @@ export default function PhotoListScreen() {
           <View style={styles.card}>
             <Text style={styles.label}>기사 분류</Text>
             <View style={{ flexDirection: "row", gap: 10 }}>
-              {(["bottle", "tobacco", "miochul"] as DriverCategory[]).map((c) => {
+              {(["bottle", "tobacco", "miochul", "wash"] as DriverCategory[]).map((c) => {
                 const on = driverCategory === c;
                 return (
                   <Pressable
@@ -664,6 +748,29 @@ export default function PhotoListScreen() {
                 );
               })}
             </View>
+
+            {driverCategory === "wash" ? (
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+                {[1, 2].map((stage) => {
+                  const on = washStage === stage;
+                  return (
+                    <Pressable
+                      key={stage}
+                      onPress={() => setWashStage(stage as 1 | 2)}
+                      style={[
+                        styles.catPill,
+                        {
+                          borderColor: on ? categoryColor("wash") : THEME.border,
+                          backgroundColor: on ? THEME.soft : THEME.surface,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.catPillText, { color: on ? categoryColor("wash") : THEME.text }]}>{`${stage}차`}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
 
             <View style={{ height: 10 }} />
 
@@ -771,7 +878,7 @@ export default function PhotoListScreen() {
                         style={[styles.fieldText, { flex: 1 }, !selectedStore ? { color: THEME.muted } : null]}
                         numberOfLines={1}
                       >
-                        {selectedStore ? buildStoreTitle(selectedStore, selectedStore.store_code) : "눌러서 점포 선택"}
+                        {selectedStore ? buildStoreTitle(selectedStore, selectedStore.store_code, selectedStore.store_name) : "눌러서 점포 선택"}
                       </Text>
                       <Ionicons name="chevron-down" size={16} color={THEME.muted} />
                     </View>
@@ -891,10 +998,10 @@ export default function PhotoListScreen() {
               const groupSelectedCount = item.items.reduce((acc, p) => (selectedIds.has(p.id) ? acc + 1 : acc), 0);
               const groupAllSelected = groupSelectedCount === count && count > 0;
 
-              const title = buildStoreTitle(meta, item.store_code);
+              const title = buildStoreTitle(meta, item.store_code, first?.store_name ?? "");
 
               // ✅ 기사면: 카테고리 pill 표시(현재 탭이지만 UI 명확하게)
-              const catLabel = isDriver ? categoryLabel(driverCategory) : "";
+              const catLabel = isDriver ? driverDisplayCategory : "";
 
               return (
                 <Pressable
@@ -998,6 +1105,7 @@ export default function PhotoListScreen() {
             contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: bottomPad, gap: 10 }}
             renderItem={({ item }) => {
               const isMio = String(item.category ?? "") === "miochul";
+              const isMetaOnly = String(item.original_url ?? "").startsWith("meta://");
               return (
                 <View style={styles.previewCard}>
                   <View style={styles.previewTopRow}>
@@ -1006,7 +1114,7 @@ export default function PhotoListScreen() {
 
                       {isDriver ? (
                         <Text style={styles.previewTag}>
-                          분류: {categoryLabel(driverCategory)}
+                          분류: {driverDisplayCategory}
                           {isMio ? ` · 납품예정일: ${item.delivery_planned_date ?? "-"}` : ""}
                         </Text>
                       ) : (
@@ -1024,8 +1132,8 @@ export default function PhotoListScreen() {
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                       <Pressable
                         onPress={() => saveToGalleryOne(item.original_url)}
-                        disabled={busy}
-                        style={[styles.smallBtn, busy && { opacity: 0.6 }]}
+                        disabled={busy || isMetaOnly}
+                        style={[styles.smallBtn, (busy || isMetaOnly) && { opacity: 0.6 }]}
                         hitSlop={8}
                       >
                         <Ionicons name="download-outline" size={16} color={THEME.text} />
@@ -1046,7 +1154,13 @@ export default function PhotoListScreen() {
 
                   <View style={{ height: 10 }} />
 
-                  <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
+                  {isMetaOnly ? (
+                    <View style={[styles.previewImage, { alignItems: "center", justifyContent: "center", backgroundColor: THEME.soft }]}>
+                      <Text style={{ color: THEME.subtext, fontWeight: "700" }}>사진 없이 저장된 미오출입니다.</Text>
+                    </View>
+                  ) : (
+                    <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
+                  )}
                 </View>
               );
             }}

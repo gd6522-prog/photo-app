@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { supabase } from "./supabase";
+import { clearSupabaseAuthStorage, isRefreshTokenError, supabase } from "./supabase";
 
 type AuthValue = {
   session: any | null;
@@ -22,15 +22,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const { data, error } = await supabase.auth.getSession();
+        if (error && isRefreshTokenError(error.message)) {
+          await clearSupabaseAuthStorage();
+          if (!mounted) return;
+          setSession(null);
+          return;
+        }
         if (!mounted) return;
         setSession(data.session ?? null);
+      } catch (e: any) {
+        if (isRefreshTokenError(e?.message || "")) {
+          await clearSupabaseAuthStorage();
+          if (!mounted) return;
+          setSession(null);
+          return;
+        }
       } finally {
         if (mounted) setLoading(false);
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, s) => {
+      if (!mounted) return;
       setSession(s ?? null);
     });
 

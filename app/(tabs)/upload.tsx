@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+﻿import { Ionicons } from "@expo/vector-icons";
 import { Buffer } from "buffer";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
@@ -31,7 +31,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 export const options = { headerShown: false };
 
 type Mode = "search" | "inspect";
-type DriverCategory = "bottle" | "tobacco" | "miochul";
+type DriverCategory = "bottle" | "tobacco" | "miochul" | "wash";
 
 type StoreMapRow = {
   store_code: string;
@@ -119,13 +119,37 @@ const THEME = {
 function categoryLabel(c: DriverCategory) {
   if (c === "bottle") return "공병";
   if (c === "tobacco") return "담배";
-  return "미오출";
+  if (c === "miochul") return "미오출";
+  return "세차";
 }
 
 function categoryColor(c: DriverCategory) {
   if (c === "bottle") return THEME.blue;
   if (c === "tobacco") return THEME.amber;
-  return THEME.purple;
+  if (c === "miochul") return THEME.purple;
+  return "#0F766E";
+}
+
+function isCarWashCategory(c: DriverCategory) {
+  return c === "wash";
+}
+
+function makeCarWashTarget(carNo: number, stageNo: 1 | 2): StoreMapRow {
+  return {
+    store_code: `CARWASH-${carNo}-${stageNo}`,
+    store_name: `${carNo}호 차량 세차 ${stageNo}차`,
+    car_no: carNo,
+    seq_no: stageNo,
+  };
+}
+
+function getDriverCategoryPath(category: DriverCategory, washStage: 1 | 2) {
+  if (category === "wash") return `wash${washStage}`;
+  return category;
+}
+
+function getCarWashDisplayName(storeName: string) {
+  return storeName.replace(/^\d+호\s*/, "");
 }
 
 function miochulFlagLabels(flags: MiochulFlags) {
@@ -161,21 +185,22 @@ export default function UploadScreen() {
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
   const { height: windowHeight } = useWindowDimensions();
-  // 하단 고정 패널을 너무 위로 띄우지 않도록 오프셋을 낮춘다.
-  // 탭바/홈 인디케이터에 가리지 않는 최소값만 보장.
-  const bottomDockOffset = Math.max(tabBarHeight - 30, 46);
+  // 플랫폼별로 하단 고정 패널 위치를 다르게 잡아 탭바와의 간격을 맞춘다.
+  const bottomDockOffset =
+    Platform.OS === "ios" ? Math.max(insets.bottom + 52, 74) : Math.max(tabBarHeight - 52, 18);
   const topPad = Math.min(Math.max(insets.top, 6), 18) + 4;
 
-  const bottomPad = Math.max(insets.bottom, 2) + 10;
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(300);
-  const listReserveBottom = bottomDockOffset + bottomPad + bottomPanelHeight + 120;
+  const bottomPad = Platform.OS === "ios" ? Math.max(insets.bottom, 10) + 6 : Math.max(insets.bottom, 0) + 2;
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(264);
+  const listReserveBottom = bottomDockOffset + bottomPad + bottomPanelHeight + 72;
+  const [isDriver, setIsDriver] = useState(false);
 
   // ✅ 키보드 올라올 때 밀어올릴 기준 (탭바/세이프영역 고려)
   const keyboardOffset = tabBarHeight + Math.max(insets.bottom, 0);
   const resultsBoxHeight = useMemo(() => {
-    // ScrollView 내부 flex 축소 이슈를 피하기 위해 기기 높이 기반으로 결과 영역 높이를 고정 계산
-    const estimated = windowHeight - (isDriver ? 610 : 640);
-    return Math.max(180, Math.min(330, estimated));
+    // 가운데 결과 영역은 가능한 크게 쓰고, 하단 고정 패널만 침범하지 않도록 최소 여백만 남긴다.
+    const estimated = windowHeight - (isDriver ? 610 : 610);
+    return Math.max(220, Math.min(isDriver ? 360 : 420, estimated));
   }, [windowHeight, isDriver]);
 
   // ===== 공통 =====
@@ -186,7 +211,6 @@ export default function UploadScreen() {
   const [busy, setBusy] = useState(false);
 
   const [myWorkPart, setMyWorkPart] = useState<string>("");
-  const [isDriver, setIsDriver] = useState(false);
 
   const [doneStoreSet, setDoneStoreSet] = useState<Set<string>>(new Set());
   const [doneLoading, setDoneLoading] = useState(false);
@@ -209,6 +233,7 @@ export default function UploadScreen() {
   const [driverLoading, setDriverLoading] = useState(false);
 
   const [driverCategory, setDriverCategory] = useState<DriverCategory>("bottle");
+  const [washStage, setWashStage] = useState<1 | 2>(1);
 
   // ✅ 미오출
   const [miochulPlanned, setMiochulPlanned] = useState(""); // YYYY-MM-DD
@@ -229,6 +254,7 @@ export default function UploadScreen() {
   const [workPartModalOpen, setWorkPartModalOpen] = useState(false);
   const [selectedWorkPartInModal, setSelectedWorkPartInModal] = useState<string>("");
   const workPartOptions = useMemo<Option[]>(() => getWorkPartOptionsExceptDriver(), []);
+  const driverPathCategory = getDriverCategoryPath(driverCategory, washStage);
 
   const requireSession = async () => {
     const { data, error } = await supabase.auth.getSession();
@@ -266,7 +292,7 @@ export default function UploadScreen() {
     return wp;
   };
 
-  const loadDoneStoresForToday = async (workPart: string, cat?: DriverCategory) => {
+  const loadDoneStoresForToday = async (workPart: string, cat?: string) => {
     const session = await requireSession();
     if (!session) return;
 
@@ -342,7 +368,7 @@ export default function UploadScreen() {
         const session = await requireSession();
         if (!session) return;
         const wp = await loadMyProfile(session.user.id);
-        await loadDoneStoresForToday(wp, wp.includes("기사") ? driverCategory : undefined);
+        await loadDoneStoresForToday(wp, wp.includes("기사") ? driverPathCategory : undefined);
       } catch (e: any) {
         Alert.alert("초기 로딩 실패", e?.message ?? String(e));
       }
@@ -356,13 +382,47 @@ export default function UploadScreen() {
 
     (async () => {
       const wp = (myWorkPart ?? "").trim();
-      if (wp) await loadDoneStoresForToday(wp, driverCategory);
+      if (wp) await loadDoneStoresForToday(wp, driverPathCategory);
+
+      if (isCarWashCategory(driverCategory)) {
+        if (carPick.kind === "car") {
+          const washTargets = [makeCarWashTarget(carPick.carNo, 1), makeCarWashTarget(carPick.carNo, 2)];
+          setDriverStores(washTargets);
+          const nextSelected =
+            selectedStore && selectedStore.store_code.startsWith("CARWASH-")
+              ? washTargets.find((item) => item.store_code === selectedStore.store_code) ?? washTargets[0]
+              : washTargets[0];
+          setSelectedStore(nextSelected);
+          setWashStage(nextSelected.seq_no === 2 ? 2 : 1);
+        } else {
+          setDriverStores([]);
+          setSelectedStore(null);
+        }
+        return;
+      }
+
+      if (selectedStore?.store_code.startsWith("CARWASH-")) {
+        setSelectedStore(null);
+      }
 
       if (carPick.kind === "car") await loadDriverStoresByCarNo(carPick.carNo);
-      else setDriverStores([]);
+      else {
+        setDriverStores([]);
+        setSelectedStore(null);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDriver, carPick?.kind, (carPick as any)?.carNo, driverCategory]);
+
+  useEffect(() => {
+    if (isDriver) return;
+    if (mode !== "inspect") return;
+    if (inspectLoading) return;
+    if (inspectStores.length > 0) return;
+
+    void loadInspectStores();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDriver, mode]);
 
   const loadDriverStoresByCarNo = async (carNo: number) => {
     const session = await requireSession();
@@ -504,6 +564,13 @@ export default function UploadScreen() {
     return true;
   };
 
+  const isMiochulReady =
+    isDriver &&
+    driverCategory === "miochul" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(miochulPlanned.trim()) &&
+    miochulFlagLabels(miochulFlags).length > 0 &&
+    miochulDetail.trim().length > 0;
+
   const pickMultiFromGalleryToQueue = async () => {
     const session = await requireSession();
     if (!session) return;
@@ -579,12 +646,14 @@ export default function UploadScreen() {
     if (!session) return;
 
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택/확인해야 업로드가 가능합니다.");
-    if (!assets || assets.length === 0) return;
+    const allowMetaOnlyUpload = isDriver && driverCategory === "miochul";
+    if ((!assets || assets.length === 0) && !allowMetaOnlyUpload) return;
+    if (!ensureMiochulFieldsOk()) return;
 
     const day = kstNowDateString();
     const wp = (myWorkPart ?? "").trim();
 
-    const cat: any = isDriver ? driverCategory : "field";
+    const cat: any = isDriver ? driverPathCategory : "field";
 
     const plannedDate = isDriver && driverCategory === "miochul" ? miochulPlanned.trim() : null;
     const detail = isDriver && driverCategory === "miochul" ? miochulDetail.trim() : null;
@@ -597,6 +666,46 @@ export default function UploadScreen() {
       let ok = 0;
       let fail = 0;
       const reasons: string[] = [];
+      const totalCount = assets.length > 0 ? assets.length : 1;
+
+      const saveDriverRow = async (path: string | null, publicUrl: string | null, bucket: string | null) => {
+        const mioMemo =
+          driverCategory === "miochul"
+            ? `[${flagsPicked.join(", ")}] 납품예정:${plannedDate ?? "-"} / 상세:${detail ?? ""}`
+            : null;
+
+        const payload: any = {
+          work_date: day,
+          car_no: carNoForMeta ? String(carNoForMeta) : null,
+          store_code: selectedStore.store_code,
+          store_name: selectedStore.store_name,
+          memo: mioMemo,
+          bucket,
+          path,
+          public_url: publicUrl,
+          created_by: session.user.id,
+        };
+
+        const minimal: any = {
+          store_code: selectedStore.store_code,
+          path,
+          public_url: publicUrl,
+          created_by: session.user.id,
+        };
+
+        await insertDeliveryPhotoRowRobust(payload, minimal);
+      };
+
+      if (assets.length === 0 && allowMetaOnlyUpload) {
+        try {
+          const metaPath = `${cat}/${selectedStore.store_code}/${day}/meta-only-${Date.now()}`;
+          await saveDriverRow(metaPath, `meta://${metaPath}`, "delivery_photos");
+          ok++;
+        } catch (e: any) {
+          fail++;
+          reasons.push(`(${fail}/${totalCount}) ${e?.message ?? String(e)}`);
+        }
+      }
 
       for (let i = 0; i < assets.length; i++) {
         const a = assets[i];
@@ -622,31 +731,7 @@ export default function UploadScreen() {
           const publicUrl = pub.publicUrl;
 
           if (isDriver) {
-            const mioMemo =
-              driverCategory === "miochul"
-                ? `[${flagsPicked.join(", ")}] 납품예정:${plannedDate ?? "-"} / 상세:${detail ?? ""}`
-                : null;
-
-            const payload: any = {
-              work_date: day,
-              car_no: carNoForMeta ? String(carNoForMeta) : null,
-              store_code: selectedStore.store_code,
-              store_name: selectedStore.store_name,
-              memo: mioMemo,
-              bucket: targetBucket,
-              path,
-              public_url: publicUrl,
-              created_by: session.user.id,
-            };
-
-            const minimal: any = {
-              store_code: selectedStore.store_code,
-              path,
-              public_url: publicUrl,
-              created_by: session.user.id,
-            };
-
-            await insertDeliveryPhotoRowRobust(payload, minimal);
+            await saveDriverRow(path, publicUrl, targetBucket);
           } else {
             const payload: any = {
               user_id: session.user.id,
@@ -677,12 +762,12 @@ export default function UploadScreen() {
           ok++;
         } catch (e: any) {
           fail++;
-          reasons.push(`(${fail}/${assets.length}) ${e?.message ?? String(e)}`);
+          reasons.push(`(${fail}/${totalCount}) ${e?.message ?? String(e)}`);
         }
       }
 
       if (ok > 0) {
-        if (isDriver) await loadDoneStoresForToday(wp, driverCategory);
+        if (isDriver) await loadDoneStoresForToday(wp, driverPathCategory);
         else await loadDoneStoresForToday(wp);
       }
 
@@ -696,10 +781,11 @@ export default function UploadScreen() {
 
   const uploadQueue = async () => {
     if (!selectedStore) return Alert.alert("경고", "점포를 먼저 선택하세요.");
-    if (queueAssets.length === 0) return Alert.alert("경고", "업로드할 사진이 없습니다. 먼저 추가/촬영하세요.");
+    if (queueAssets.length === 0 && !isMiochulReady) return Alert.alert("경고", "업로드할 사진이 없습니다. 먼저 추가/촬영하세요.");
     if (!ensureMiochulFieldsOk()) return;
 
-    Alert.alert("업로드", `${queueAssets.length}장을 업로드할까요?`, [
+    const uploadCountLabel = queueAssets.length > 0 ? `${queueAssets.length}장` : "미오출 설정";
+    Alert.alert("업로드", `${uploadCountLabel}을 업로드할까요?`, [
       { text: "취소", style: "cancel" },
       {
         text: "업로드",
@@ -732,11 +818,15 @@ export default function UploadScreen() {
   const isSupport = isDriver && carPick?.kind === "support";
 
   const selectedLine = selectedStore
-    ? `${selectedStore.car_no ?? "-"}-${selectedStore.seq_no ?? "-"} / ${selectedStore.store_code} / ${selectedStore.store_name}`
+    ? selectedStore.store_code.startsWith("CARWASH-")
+      ? getCarWashDisplayName(selectedStore.store_name)
+      : `${selectedStore.car_no ?? "-"}-${selectedStore.seq_no ?? "-"} / ${selectedStore.store_code} / ${selectedStore.store_name}`
     : "점포를 선택하세요";
 
   const renderStoreRow = (item: StoreMapRow) => {
-    const doneKey = isDriver ? `${item.store_code}:${driverCategory}` : item.store_code;
+    const isCarWashRow = item.store_code.startsWith("CARWASH-");
+    const itemDriverPathCategory = isCarWashRow ? getDriverCategoryPath("wash", item.seq_no === 2 ? 2 : 1) : driverPathCategory;
+    const doneKey = isDriver ? `${item.store_code}:${itemDriverPathCategory}` : item.store_code;
     const isDoneToday = doneStoreSet.has(doneKey);
     const isSelected = selectedStore?.store_code === item.store_code;
 
@@ -744,6 +834,7 @@ export default function UploadScreen() {
       <Pressable
         onPress={() => {
           Keyboard.dismiss();
+          if (isCarWashRow) setWashStage(item.seq_no === 2 ? 2 : 1);
           setSelectedStore(item);
         }}
         style={[
@@ -754,16 +845,18 @@ export default function UploadScreen() {
       >
         <View style={styles.rowLeft}>
           <Text style={[styles.rowNo, isDoneToday && { color: THEME.subtext }]} numberOfLines={1}>
-            {item.car_no ?? "-"}-{item.seq_no ?? "-"}
+            {isCarWashRow ? item.car_no ?? "-" : `${item.car_no ?? "-"}-${item.seq_no ?? "-"}`}
           </Text>
         </View>
 
         <View style={styles.rowMid}>
-          <Text style={[styles.rowCode, isDoneToday && { color: THEME.subtext }]} numberOfLines={1}>
-            [{item.store_code}]
-          </Text>
+          {!isCarWashRow ? (
+            <Text style={[styles.rowCode, isDoneToday && { color: THEME.subtext }]} numberOfLines={1}>
+              [{item.store_code}]
+            </Text>
+          ) : null}
           <Text style={[styles.rowNameBig, isDoneToday && { color: THEME.subtext }]} numberOfLines={2} ellipsizeMode="tail">
-            {item.store_name}
+            {isCarWashRow ? getCarWashDisplayName(item.store_name) : item.store_name}
           </Text>
         </View>
 
@@ -786,6 +879,7 @@ export default function UploadScreen() {
     miochulPlanned && mioPicked.length > 0
       ? `납품예정일 ${miochulPlanned} / ${mioPicked.join(", ")}${miochulDetail.trim() ? " / 상세 있음" : ""}`
       : "미오출 정보 미설정";
+  const listBottomSpacer = <View style={{ height: 116 }} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
@@ -831,7 +925,7 @@ export default function UploadScreen() {
             {isDriver ? (
               <View style={styles.cardCompact}>
                 <View style={{ flexDirection: "row", gap: 10 }}>
-                  {(["bottle", "tobacco", "miochul"] as DriverCategory[]).map((c) => {
+                  {(["bottle", "tobacco", "miochul", "wash"] as DriverCategory[]).map((c) => {
                     const on = driverCategory === c;
                     return (
                       <Pressable
@@ -839,7 +933,7 @@ export default function UploadScreen() {
                         onPress={async () => {
                           setDriverCategory(c);
                           const wp = (myWorkPart ?? "").trim();
-                          if (wp) await loadDoneStoresForToday(wp, c);
+                          if (wp) await loadDoneStoresForToday(wp, getDriverCategoryPath(c, washStage));
                         }}
                         style={[
                           styles.catPill,
@@ -1008,6 +1102,7 @@ export default function UploadScreen() {
                     nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
                     contentContainerStyle={{ paddingBottom: 18 }}
+                    ListFooterComponent={listBottomSpacer}
                     ListEmptyComponent={
                       <View style={{ padding: 14 }}>
                         <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
@@ -1026,6 +1121,7 @@ export default function UploadScreen() {
                     nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
                     contentContainerStyle={{ paddingBottom: 18 }}
+                    ListFooterComponent={listBottomSpacer}
                     ListEmptyComponent={
                       <View style={{ padding: 14 }}>
                         <Text style={{ color: THEME.subtext, fontWeight: "800" }}>호차 점포가 없습니다.</Text>
@@ -1041,6 +1137,7 @@ export default function UploadScreen() {
                   nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingBottom: 18 }}
+                  ListFooterComponent={listBottomSpacer}
                   ListEmptyComponent={
                     <View style={{ padding: 14 }}>
                       <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검색 결과가 여기에 표시됩니다.</Text>
@@ -1067,6 +1164,7 @@ export default function UploadScreen() {
                   nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingBottom: 18 }}
+                  ListFooterComponent={listBottomSpacer}
                   ListEmptyComponent={
                     <View style={{ padding: 14 }}>
                       <Text style={{ color: THEME.subtext, fontWeight: "800" }}>검수 점포 결과가 없습니다.</Text>
@@ -1143,12 +1241,18 @@ export default function UploadScreen() {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity onPress={uploadQueue} disabled={!selectedStore || busy || queueCount === 0} style={[styles.btnWide, styles.btnGreen, (!selectedStore || busy || queueCount === 0) && styles.dim]}>
-              <View style={styles.btnInner}>
-                <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                <Text style={styles.btnTextWhite}>{busy ? "업로드 중..." : `사진 업로드 (${queueCount}장)`}</Text>
-              </View>
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={uploadQueue}
+                disabled={!selectedStore || busy || (queueCount === 0 && !isMiochulReady)}
+                style={[styles.btnWide, styles.btnGreen, (!selectedStore || busy || (queueCount === 0 && !isMiochulReady)) && styles.dim]}
+              >
+                <View style={styles.btnInner}>
+                  <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                  <Text style={styles.btnTextWhite}>
+                    {busy ? "업로드 중..." : queueCount > 0 ? `사진 업로드 (${queueCount}장)` : "미오출 업로드"}
+                  </Text>
+                </View>
+              </TouchableOpacity>
           </View>
 
           {/* ✅ 기사 호차 드롭다운 모달 */}

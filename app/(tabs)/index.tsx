@@ -1,4 +1,4 @@
-// app/(tabs)/index.tsx
+﻿// app/(tabs)/index.tsx
 import { useFocusEffect } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import * as Device from "expo-device";
@@ -711,10 +711,8 @@ export default function MainMenu() {
           `Report was saved, but admin push notification failed.${pushErrorMsg ? `\n\nReason: ${pushErrorMsg}` : ""}`
         );
       } else {
-        Alert.alert(
-          "위험요인 제보 성공",
-          "000님 위험요인 제보 감사합니다. 빠르게 개선 진행하겠습니다."
-        );
+        const reporterName = (displayName || "제보자").trim();
+        Alert.alert("위험요인 제보 성공", `${reporterName}님 위험요인 제보 감사합니다.`);
       }
       setReportOpen(false);
       setReportPhotos([]);
@@ -1160,8 +1158,8 @@ export default function MainMenu() {
                 disabled={busy || !isViewingToday || !!att?.clock_in_at}
                 style={[
                   styles.attPunchBtn,
-                  styles.attPunchBtnIn,
-                  (busy || !isViewingToday || !!att?.clock_in_at) && styles.btnDisabled,
+                  att?.clock_in_at ? styles.attPunchBtnDone : styles.attPunchBtnIn,
+                  (busy || !isViewingToday) && !att?.clock_in_at && styles.btnDisabled,
                 ]}
               >
                 <View style={styles.btnInner}>
@@ -1177,8 +1175,8 @@ export default function MainMenu() {
                 disabled={busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at}
                 style={[
                   styles.attPunchBtn,
-                  styles.attPunchBtnOut,
-                  (busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at) && styles.btnDisabled,
+                  att?.clock_out_at ? styles.attPunchBtnDone : styles.attPunchBtnOut,
+                  (busy || !isViewingToday || !att?.clock_in_at) && !att?.clock_out_at && styles.btnDisabled,
                 ]}
               >
                 <View style={styles.btnInner}>
@@ -1242,8 +1240,6 @@ export default function MainMenu() {
             />
 
             <ActionButton onPress={onLogout} disabled={busy} icon="log-out-outline" title="로그아웃" variant="dangerOutline" />
-
-            <Text style={styles.footnote}>로그아웃 시 다음 실행부터 로그인 화면이 먼저 뜹니다.</Text>
           </View>
         </Pressable>
       </ScrollView>
@@ -1526,6 +1522,7 @@ const styles = StyleSheet.create({
   },
   attPunchBtnIn: { backgroundColor: "#ECFDF3", borderColor: "#A7F3D0" },
   attPunchBtnOut: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
+  attPunchBtnDone: { backgroundColor: THEME.soft, borderColor: THEME.border },
   attPunchTimeText: { color: "#111827", fontWeight: "800", fontSize: 18, letterSpacing: -0.1 },
   attPunchIdleText: { color: "#374151", fontWeight: "800", fontSize: 16, letterSpacing: -0.1 },
 
@@ -1578,11 +1575,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  badgeHot: { backgroundColor: "#EAF2FF", borderWidth: 1, borderColor: "#8CB3FF" },
-  badgeIdle: { backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border },
+  badgeHot: { backgroundColor: "#111111", borderWidth: 1, borderColor: "#111111" },
+  badgeIdle: { backgroundColor: "#F3F4F6", borderWidth: 1, borderColor: "#D1D5DB" },
   badgeText: { fontWeight: "900" },
-  badgeTextHot: { color: "#1E3A8A" },
-  badgeTextIdle: { color: THEME.text },
+  badgeTextHot: { color: "#FFFFFF" },
+  badgeTextIdle: { color: "#111111" },
 
   footnote: { color: THEME.muted, fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },
 

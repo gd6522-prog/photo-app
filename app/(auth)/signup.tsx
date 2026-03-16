@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
@@ -18,6 +19,8 @@ import {
 import { localeFromNationality, setLocale } from "../../src/lib/locale";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { getWorkPartOptionsIncludeDriver, Option } from "../../src/lib/workParts";
+
+const POST_SIGNUP_LOGIN_KEY = "hx_post_signup_login_redirect";
 
 // ✅ 작업파트: 기존 + 임시직 추가
 const WORK_PARTS: Option[] = [
@@ -447,6 +450,7 @@ export default function SignupScreen() {
           birthdate: birthdateDashed,
           nationality: nationalityFinal,
           language: lang,
+          pending_label: "신규가입",
         },
       });
 
@@ -501,6 +505,7 @@ export default function SignupScreen() {
       }, 50);
     } catch (err: any) {
       await cleanupIncompleteSignup(cleanupToken);
+      await AsyncStorage.setItem(POST_SIGNUP_LOGIN_KEY, "1");
       await hardSignOut();
       Alert.alert("가입 실패", err?.message ?? JSON.stringify(err));
     } finally {

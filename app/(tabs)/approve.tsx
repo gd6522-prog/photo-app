@@ -1,16 +1,25 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Alert, FlatList, Pressable, SafeAreaView, Text, View, ActivityIndicator } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Pressable, SafeAreaView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
-import { isAdminUser, getPendingCount } from "../../src/lib/admin";
+import { fetchPendingApprovals, fetchPendingLabels, isAdminUser, PendingApprovalRow } from "../../src/lib/admin";
 
-type Row = {
-  id: string;
-  phone: string | null;
-  name: string | null;
-  approval_status: "pending" | "approved" | "rejected";
-  created_at: string;
-};
+type Row = PendingApprovalRow;
+
+function inferPendingLabel(row: Partial<Row>) {
+  const explicit = String(row.pending_label ?? "").trim();
+  if (explicit) return explicit;
+
+  const created = new Date(String(row.created_at ?? ""));
+  if (!Number.isNaN(created.getTime())) {
+    const ageMs = Date.now() - created.getTime();
+    if (ageMs > 24 * 60 * 60 * 1000) {
+      return "비밀번호 5회 오류";
+    }
+  }
+
+  return "신규가입";
+}
 
 export default function ApproveScreen() {
   const router = useRouter();
@@ -23,23 +32,42 @@ export default function ApproveScreen() {
     try {
       const admin = await isAdminUser();
       if (!admin) {
-        Alert.alert("권한 없음", "관리자만 접근 가능합니다.", [
-          { text: "확인", onPress: () => router.replace("/(tabs)") },
-        ]);
+        Alert.alert("권한 없음", "관리자만 접근 가능합니다.", [{ text: "확인", onPress: () => router.replace("/(tabs)") }]);
         return;
       }
 
-      const c = await getPendingCount();
-      setPendingCount(c);
+      try {
+        const payload = await fetchPendingApprovals();
+        setPendingCount(payload.count);
+        setRows(payload.rows.map((row) => ({ ...row, pending_label: inferPendingLabel(row) })));
+      } catch (edgeErr: any) {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id, phone, name, approval_status, created_at")
+          .eq("approval_status", "pending")
+          .order("created_at", { ascending: true });
 
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, phone, name, approval_status, created_at")
-        .eq("approval_status", "pending")
-        .order("created_at", { ascending: true });
+        if (error) {
+          throw new Error(edgeErr?.message || error.message || "승인 대기 목록 조회 실패");
+        }
 
-      if (error) throw error;
-      setRows((data ?? []) as Row[]);
+        const fallbackRows = (data ?? []) as Row[];
+        let labelMap: Record<string, string> = {};
+        try {
+          labelMap = await fetchPendingLabels(fallbackRows.map((row) => row.id));
+        } catch {}
+
+        const mergedRows = fallbackRows.map((row) => ({
+          ...row,
+          pending_label: inferPendingLabel({
+            ...row,
+            pending_label: labelMap[row.id] || row.pending_label || "",
+          }),
+        }));
+
+        setRows(mergedRows);
+        setPendingCount(mergedRows.length);
+      }
     } catch (e: any) {
       Alert.alert("오류", e?.message ?? "불러오기 실패");
     } finally {
@@ -69,27 +97,30 @@ export default function ApproveScreen() {
     });
 
     const payload = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((payload as any)?.error || "반려 삭제 실패");
+    if (!res.ok) throw new Error((payload as any)?.error || "반려 및 삭제 실패");
   }, []);
 
-  const setStatus = useCallback(async (userId: string, status: "approved" | "rejected") => {
-    try {
-      if (status === "rejected") {
-        await rejectAndDeleteUser(userId);
-      } else {
-        const { error } = await supabase.rpc("admin_set_approval", {
-          p_user_id: userId,
-          p_status: status,
-        });
-        if (error) throw error;
-      }
+  const setStatus = useCallback(
+    async (userId: string, status: "approved" | "rejected") => {
+      try {
+        if (status === "rejected") {
+          await rejectAndDeleteUser(userId);
+        } else {
+          const { error } = await supabase.rpc("admin_set_approval", {
+            p_user_id: userId,
+            p_status: status,
+          });
+          if (error) throw error;
+        }
 
-      setRows((prev) => prev.filter((r) => r.id !== userId));
-      setPendingCount((prev) => Math.max(0, prev - 1));
-    } catch (e: any) {
-      Alert.alert("처리 실패", e?.message ?? "승인/반려 실패");
-    }
-  }, [rejectAndDeleteUser]);
+        setRows((prev) => prev.filter((r) => r.id !== userId));
+        setPendingCount((prev) => Math.max(0, prev - 1));
+      } catch (e: any) {
+        Alert.alert("처리 실패", e?.message ?? "승인/반려 실패");
+      }
+    },
+    [rejectAndDeleteUser]
+  );
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
@@ -118,7 +149,7 @@ export default function ApproveScreen() {
         {loading ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator />
-            <Text style={{ marginTop: 10, color: "#6B7280" }}>불러오는 중…</Text>
+            <Text style={{ marginTop: 10, color: "#6B7280" }}>불러오는 중...</Text>
           </View>
         ) : (
           <FlatList
@@ -142,13 +173,49 @@ export default function ApproveScreen() {
                   gap: 6,
                 }}
               >
-                <Text style={{ fontSize: 16, fontWeight: "900", color: "#111827" }}>
-                  {item.name?.trim() ? item.name : "이름없음"}
-                </Text>
+                <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                  <Text style={{ flex: 1, fontSize: 16, fontWeight: "900", color: "#111827" }}>
+                    {item.name?.trim() ? item.name : "이름없음"}
+                  </Text>
+                  <View
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 999,
+                      backgroundColor:
+                        item.pending_label === "비밀번호 5회 오류"
+                          ? "#FEF2F2"
+                          : item.pending_label === "신규가입"
+                            ? "#EEF2FF"
+                            : "#F3F4F6",
+                      borderWidth: 1,
+                      borderColor:
+                        item.pending_label === "비밀번호 5회 오류"
+                          ? "#FCA5A5"
+                          : item.pending_label === "신규가입"
+                            ? "#C7D2FE"
+                            : "#D1D5DB",
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: "900",
+                        color:
+                          item.pending_label === "비밀번호 5회 오류"
+                            ? "#B91C1C"
+                            : item.pending_label === "신규가입"
+                              ? "#4338CA"
+                              : "#4B5563",
+                      }}
+                    >
+                      {item.pending_label || "구분없음"}
+                    </Text>
+                  </View>
+                </View>
+
                 <Text style={{ color: "#374151" }}>전화번호: {item.phone ?? "없음"}</Text>
-                <Text style={{ color: "#9CA3AF", fontSize: 12 }}>
-                  가입: {new Date(item.created_at).toLocaleString()}
-                </Text>
+                <Text style={{ color: "#9CA3AF", fontSize: 12 }}>가입: {new Date(item.created_at).toLocaleString()}</Text>
 
                 <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
                   <Pressable

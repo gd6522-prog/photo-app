@@ -14,9 +14,13 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 
 const KEY_AUTO_LOGIN = "hx_auto_login";
+const KEY_LOGIN_FAIL_PREFIX = "hx_login_fail_";
+const KEY_LOGIN_LOCK_PREFIX = "hx_login_lock_";
+const POST_SIGNUP_LOGIN_KEY = "hx_post_signup_login_redirect";
+const MAX_LOGIN_FAILS = 5;
 
 function toE164KR(raw: string): string | null {
   const s = raw.replace(/[^\d+]/g, "");
@@ -24,6 +28,7 @@ function toE164KR(raw: string): string | null {
     if (!/^\+\d{8,15}$/.test(s)) return null;
     return s;
   }
+
   const digits = s.replace(/\D/g, "");
   if (digits.length < 9 || digits.length > 11) return null;
   if (!digits.startsWith("0")) return null;
@@ -35,16 +40,18 @@ function phoneToEmail(e164: string) {
   return `p_${digits}@phone.local`;
 }
 
+function loginFailKey(e164: string) {
+  return `${KEY_LOGIN_FAIL_PREFIX}${e164}`;
+}
+
+function loginLockKey(e164: string) {
+  return `${KEY_LOGIN_LOCK_PREFIX}${e164}`;
+}
+
 function isSessionMissingPopup(title?: string, message?: string) {
   const t = (title ?? "").toLowerCase();
   const m = (message ?? "").toLowerCase();
-  return (
-    t.includes("로그인 필요") ||
-    m.includes("세션이 없습니다") ||
-    m.includes("로그인 후 다시") ||
-    t.includes("login required") ||
-    (m.includes("session") && m.includes("login"))
-  );
+  return t.includes("login required") || (m.includes("session") && m.includes("login"));
 }
 
 function isInvalidCreds(err: any) {
@@ -60,7 +67,7 @@ function mapAuthErrorToKo(err: any) {
     return "전화번호 또는 비밀번호가 올바르지 않습니다.";
   }
   if (msg.includes("email not confirmed") || msg.includes("phone not confirmed")) {
-    return "휴대폰 인증이 완료되지 않은 계정입니다.";
+    return "승인되지 않은 계정입니다.";
   }
   if (msg.includes("too many requests") || msg.includes("rate limit")) {
     return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.";
@@ -75,6 +82,32 @@ function mapAuthErrorToKo(err: any) {
   return err?.message ?? "로그인 중 오류가 발생했습니다.";
 }
 
+async function markProfilePendingByPhone(phone: string) {
+  const rawDigits = phone.startsWith("+82") ? `0${phone.slice(3)}` : phone;
+  const email = phoneToEmail(phone);
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify({
+      action: "mark_pending_by_identity",
+      phone,
+      phone_raw: rawDigits,
+      email,
+    }),
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error((payload as any)?.error || "failed to mark pending");
+  }
+
+  return await res.json().catch(() => ({}));
+}
+
 export default function LoginScreen() {
   const router = useRouter();
 
@@ -83,6 +116,8 @@ export default function LoginScreen() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [autoLogin, setAutoLogin] = useState(true);
+  const [loginFailCount, setLoginFailCount] = useState(0);
+  const [loginLocked, setLoginLocked] = useState(false);
 
   const originalAlertRef = useRef<typeof Alert.alert | null>(null);
 
@@ -120,6 +155,29 @@ export default function LoginScreen() {
   const e164 = useMemo(() => toE164KR(phone.trim()), [phone]);
   const canSubmit = useMemo(() => !!e164 && password.trim().length >= 6, [e164, password]);
 
+  useEffect(() => {
+    (async () => {
+      if (!e164) {
+        setLoginFailCount(0);
+        setLoginLocked(false);
+        return;
+      }
+
+      try {
+        const [countRaw, lockRaw] = await Promise.all([
+          AsyncStorage.getItem(loginFailKey(e164)),
+          AsyncStorage.getItem(loginLockKey(e164)),
+        ]);
+        const count = Number(countRaw ?? "0");
+        setLoginFailCount(Number.isFinite(count) ? count : 0);
+        setLoginLocked(lockRaw === "1");
+      } catch {
+        setLoginFailCount(0);
+        setLoginLocked(false);
+      }
+    })();
+  }, [e164]);
+
   const toggleAutoLogin = async () => {
     const next = !autoLogin;
     setAutoLogin(next);
@@ -128,8 +186,62 @@ export default function LoginScreen() {
     } catch {}
   };
 
+  const clearLoginFailState = async (targetE164: string) => {
+    try {
+      await Promise.all([
+        AsyncStorage.removeItem(loginFailKey(targetE164)),
+        AsyncStorage.removeItem(loginLockKey(targetE164)),
+      ]);
+    } catch {}
+    setLoginFailCount(0);
+    setLoginLocked(false);
+  };
+
+  const recordLoginFail = async (targetE164: string) => {
+    const key = loginFailKey(targetE164);
+    let nextCount = 1;
+    let pendingResult: any = null;
+    let pendingError = "";
+
+    try {
+      const prevRaw = await AsyncStorage.getItem(key);
+      const prev = Number(prevRaw ?? "0");
+      nextCount = Number.isFinite(prev) ? prev + 1 : 1;
+      await AsyncStorage.setItem(key, String(nextCount));
+    } catch {
+      nextCount = 1;
+    }
+
+    setLoginFailCount(nextCount);
+
+    if (nextCount < MAX_LOGIN_FAILS) {
+      return { nextCount, pendingResult, pendingError };
+    }
+
+    try {
+      pendingResult = await markProfilePendingByPhone(targetE164);
+    } catch (e: any) {
+      pendingError = String(e?.message ?? e ?? "");
+    }
+
+    try {
+      await AsyncStorage.setItem(loginLockKey(targetE164), "1");
+    } catch {}
+
+    setLoginLocked(true);
+    return { nextCount, pendingResult, pendingError };
+  };
+
   const onLogin = async () => {
     if (!canSubmit || loading) return;
+    if (e164 && loginLocked) {
+      try {
+        await markProfilePendingByPhone(e164);
+      } catch {}
+      Alert.alert("승인 대기", "비밀번호를 5회 실패하여 승인대기 상태입니다. 관리자 승인 후 다시 로그인해 주세요.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -170,12 +282,35 @@ export default function LoginScreen() {
         Alert.alert("승인 대기", "관리자 승인 후 로그인할 수 있습니다.");
         return;
       }
+
+      try {
+        await AsyncStorage.removeItem(POST_SIGNUP_LOGIN_KEY);
+      } catch {}
+
+      await clearLoginFailState(e164!);
     } catch (err: any) {
+      const failState = e164 && isInvalidCreds(err) ? await recordLoginFail(e164) : { nextCount: 0, pendingResult: null, pendingError: "" };
+      if (failState.nextCount >= MAX_LOGIN_FAILS) {
+        if (failState.pendingError) {
+          Alert.alert("로그인 실패", `5회 실패로 앱 잠금은 됐지만 승인대기 반영은 실패했습니다.\n${failState.pendingError}`);
+          return;
+        }
+
+        const source = String(failState.pendingResult?.source ?? "").trim();
+        const userId = String(failState.pendingResult?.user_id ?? "").trim();
+        const detail = source || userId ? `\nsource=${source || "-"} user=${userId || "-"}` : "";
+        Alert.alert("로그인 실패", `비밀번호를 5회 실패해서 승인대기 상태로 바뀌었습니다.${detail}`);
+        return;
+      }
+
       Alert.alert("로그인 실패", mapAuthErrorToKo(err));
     } finally {
       setLoading(false);
     }
   };
+
+  const failGuide =
+    loginFailCount > 0 ? `로그인 실패 ${loginFailCount}/${MAX_LOGIN_FAILS}` : "전화번호와 비밀번호로 로그인하세요.";
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
@@ -195,9 +330,6 @@ export default function LoginScreen() {
               source={require("../../assets/hanexpress-logo.png")}
               style={{ width: 260, height: 80, resizeMode: "contain" }}
             />
-            <Text style={{ marginTop: 10, color: "#6B7280", textAlign: "center" }}>
-              전화번호와 비밀번호로 로그인하세요.
-            </Text>
           </View>
 
           <View
@@ -264,11 +396,7 @@ export default function LoginScreen() {
                   editable={!loading}
                   style={{ flex: 1, paddingVertical: 12, color: "#111827" }}
                 />
-                <Pressable
-                  onPress={() => setShowPw((v) => !v)}
-                  style={{ paddingLeft: 10, paddingVertical: 10 }}
-                  disabled={loading}
-                >
+                <Pressable onPress={() => setShowPw((v) => !v)} style={{ paddingLeft: 10, paddingVertical: 10 }} disabled={loading}>
                   <Text style={{ color: "#2563EB", fontWeight: "900" }}>{showPw ? "숨김" : "표시"}</Text>
                 </Pressable>
               </View>
@@ -282,11 +410,7 @@ export default function LoginScreen() {
                 marginTop: 2,
               }}
             >
-              <Pressable
-                onPress={toggleAutoLogin}
-                disabled={loading}
-                style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
-              >
+              <Pressable onPress={toggleAutoLogin} disabled={loading} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <View
                   style={{
                     width: 22,
@@ -307,6 +431,19 @@ export default function LoginScreen() {
               <Pressable onPress={() => router.push("/(auth)/reset-password" as any)} disabled={loading}>
                 <Text style={{ color: "#2563EB", fontWeight: "900" }}>비밀번호 재설정</Text>
               </Pressable>
+            </View>
+
+            <View style={{ marginTop: 4, marginBottom: 2 }}>
+              <Text style={{ color: "#6B7280", textAlign: "center" }}>{failGuide}</Text>
+              {loginLocked ? (
+                <Text style={{ marginTop: 6, color: "#DC2626", textAlign: "center", fontWeight: "800" }}>
+                  5회 실패로 승인대기 상태입니다. 관리자 승인 후 다시 로그인해 주세요.
+                </Text>
+              ) : loginFailCount > 0 ? (
+                <Text style={{ marginTop: 6, color: "#DC2626", textAlign: "center", fontWeight: "800" }}>
+                  5회 실패하면 승인대기 상태로 변경됩니다.
+                </Text>
+              ) : null}
             </View>
 
             <Pressable
@@ -331,11 +468,7 @@ export default function LoginScreen() {
               )}
             </Pressable>
 
-            <Pressable
-              onPress={() => router.push("/(auth)/signup" as any)}
-              disabled={loading}
-              style={{ alignItems: "center", paddingVertical: 4 }}
-            >
+            <Pressable onPress={() => router.push("/(auth)/signup" as any)} disabled={loading} style={{ alignItems: "center", paddingVertical: 4 }}>
               <Text style={{ color: "#2563EB", fontWeight: "900" }}>회원가입</Text>
             </Pressable>
           </View>
