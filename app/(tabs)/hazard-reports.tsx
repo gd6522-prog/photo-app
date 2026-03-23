@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 
 type ReportRow = {
   id: string;
@@ -29,6 +29,38 @@ type PhotoRow = {
   photo_url: string | null;
   created_at: string;
 };
+
+async function fetchHazardReportPhotos(params: {
+  accessToken: string;
+  reportIds: string[];
+}): Promise<PhotoRow[]> {
+  const payload = {
+    report_ids: params.reportIds,
+    access_token: params.accessToken,
+  };
+
+  const invokeRes = await supabase.functions.invoke("list-hazard-report-photos", {
+    body: payload,
+  });
+  if (!(invokeRes as any)?.error) {
+    const rows = (invokeRes as any)?.data?.rows;
+    return Array.isArray(rows) ? (rows as PhotoRow[]) : [];
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/list-hazard-report-photos`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as any)?.error || `HTTP ${res.status}`);
+  return Array.isArray((data as any)?.rows) ? ((data as any).rows as PhotoRow[]) : [];
+}
 
 function formatKST(ts: string): string {
   const d = new Date(ts);
@@ -147,6 +179,39 @@ export default function HazardReportsScreen() {
       await fetchReports();
     })();
   }, []);
+
+  useEffect(() => {
+    if (reports.length === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      const session = await requireSession();
+      if (!session) return;
+
+      try {
+        const rows = await fetchHazardReportPhotos({
+          accessToken: String(session.access_token ?? ""),
+          reportIds: reports.map((r) => r.id),
+        });
+
+        if (cancelled) return;
+
+        const map: Record<string, PhotoRow[]> = {};
+        for (const p of rows) {
+          if (!map[p.report_id]) map[p.report_id] = [];
+          map[p.report_id].push(p);
+        }
+        for (const k of Object.keys(map)) {
+          map[k].sort((a, b) => (a.created_at > b.created_at ? -1 : 1));
+        }
+        setPhotoMap(map);
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [reports]);
 
   const openPreview = (r: ReportRow) => {
     const extra = photoMap[r.id] ?? [];

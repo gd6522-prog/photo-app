@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import {
@@ -12,7 +13,10 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
+
+const KEY_LOGIN_FAIL_PREFIX = "hx_login_fail_";
+const KEY_LOGIN_LOCK_PREFIX = "hx_login_lock_";
 
 function toE164KR(raw: string): string | null {
   const s = raw.replace(/[^\d+]/g, "");
@@ -48,6 +52,14 @@ function mapAuthErrorToKo(err: any) {
   return err?.message ?? "처리 중 오류가 발생했습니다.";
 }
 
+function loginFailKey(e164: string) {
+  return `${KEY_LOGIN_FAIL_PREFIX}${e164}`;
+}
+
+function loginLockKey(e164: string) {
+  return `${KEY_LOGIN_LOCK_PREFIX}${e164}`;
+}
+
 export default function ResetPasswordScreen() {
   const router = useRouter();
 
@@ -65,6 +77,30 @@ export default function ResetPasswordScreen() {
   const pwMatch = useMemo(() => newPw.trim().length >= 6 && newPw.trim() === newPw2.trim(), [newPw, newPw2]);
   const canSendOtp = !!e164 && !loading && !otpSent;
   const canReset = !!lockedPhone && otp.trim().length >= 4 && pwMatch && !loading;
+
+  const clearLocalLockState = async (target: string) => {
+    try {
+      await Promise.all([
+        AsyncStorage.removeItem(loginFailKey(target)),
+        AsyncStorage.removeItem(loginLockKey(target)),
+      ]);
+    } catch {}
+  };
+
+  const unlockAfterPasswordReset = async (accessToken: string) => {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ action: "unlock_after_password_reset" }),
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((payload as any)?.error || "잠금 해제 실패");
+  };
 
   const onSendOtp = async () => {
     if (!canSendOtp) return;
@@ -119,6 +155,12 @@ export default function ResetPasswordScreen() {
         password: newPw.trim(),
       });
       if (upErr) throw upErr;
+
+      const accessToken = String(otpData?.session?.access_token ?? "");
+      if (!accessToken) throw new Error("비밀번호 변경 후 세션 확인에 실패했습니다.");
+
+      await unlockAfterPasswordReset(accessToken);
+      await clearLocalLockState(target);
 
       await supabase.auth.signOut();
       Alert.alert("완료", "비밀번호가 변경되었습니다. 새 비밀번호로 로그인해 주세요.", [

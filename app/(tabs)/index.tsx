@@ -180,6 +180,39 @@ async function sendHazardPushDirect(payload: HazardPushPayload) {
   return assertPushDelivered(data);
 }
 
+async function saveHazardExtraPhotos(params: {
+  accessToken: string;
+  reportId: string;
+  photos: { photo_path: string; photo_url: string }[];
+}) {
+  const payload = {
+    report_id: params.reportId,
+    access_token: params.accessToken,
+    photos: params.photos,
+  };
+
+  const invokeRes = await supabase.functions.invoke("save-hazard-report-photos", {
+    body: payload,
+  });
+  if (!(invokeRes as any)?.error) {
+    return (invokeRes as any)?.data ?? {};
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/save-hazard-report-photos`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as any)?.error || `HTTP ${res.status}`);
+  return data;
+}
+
 async function sendHazardPushWithRetry(
   payload: HazardPushPayload,
   maxAttempts = PUSH_NOTIFY_MAX_ATTEMPTS
@@ -347,6 +380,7 @@ export default function MainMenu() {
 
   const [busy, setBusy] = useState(false);
   const [displayName, setDisplayName] = useState<string>("");
+  const [workPart, setWorkPart] = useState<string>("");
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
@@ -435,12 +469,14 @@ export default function MainMenu() {
       const metaName = (meta?.name || meta?.full_name || meta?.nickname || "").trim();
 
       const profRes = await withTimeout(
-        supabase.from("profiles").select("name").eq("id", u.id).single(),
+        supabase.from("profiles").select("name, work_part").eq("id", u.id).single(),
         12000,
         "프로필 조회"
       );
 
       const profName = ((profRes as any).data?.name ?? "").trim();
+      const profWorkPart = ((profRes as any).data?.work_part ?? "").trim();
+      setWorkPart(profWorkPart);
       if (!(profRes as any).error && profName) {
         setDisplayName(profName);
         return;
@@ -460,6 +496,8 @@ export default function MainMenu() {
     } catch {
       const meta: any = (user as any)?.user_metadata ?? {};
       const metaName = (meta?.name || meta?.full_name || meta?.nickname || "").trim();
+      const metaWorkPart = (meta?.work_part || "").trim();
+      setWorkPart(metaWorkPart);
       setDisplayName(metaName || "이름 미등록");
     }
   }, [user]);
@@ -646,9 +684,12 @@ export default function MainMenu() {
     }
 
     setReportUploading(true);
+    let createdReportId = "";
+    const uploadedPaths: string[] = [];
     try {
       const session = (sessRes as any).data.session;
       const userId = session.user.id;
+      const accessToken = String(session.access_token ?? "").trim();
       const day = kstNowDateString();
 
       const firstUri = reportPhotos[0];
@@ -667,6 +708,7 @@ export default function MainMenu() {
         "사진 업로드"
       );
       if ((up1Res as any).error) throw (up1Res as any).error;
+      uploadedPaths.push(firstPath);
 
       const { data: pub1 } = supabase.storage.from("hazard-reports").getPublicUrl(firstPath);
       const firstUrl = pub1.publicUrl;
@@ -689,6 +731,48 @@ export default function MainMenu() {
 
       const reportId = (insRepRes as any).data?.id as string;
       if (!reportId) throw new Error("report id 생성 실패");
+      createdReportId = reportId;
+
+      if (reportPhotos.length > 1) {
+        const extraRows: Array<{ report_id: string; photo_path: string; photo_url: string }> = [];
+
+        for (const uri of reportPhotos.slice(1)) {
+          const name = makeSafeFileName();
+          const path = `${day}/${userId}/${name}`;
+          const ab = await uriToArrayBuffer(uri);
+          const contentType = guessContentType(uri);
+
+          const upRes = await withTimeout(
+            supabase.storage.from("hazard-reports").upload(path, ab, {
+              contentType,
+              upsert: false,
+            }),
+            20000,
+            "추가 사진 업로드"
+          );
+          if ((upRes as any).error) throw (upRes as any).error;
+
+          uploadedPaths.push(path);
+          const { data: pub } = supabase.storage.from("hazard-reports").getPublicUrl(path);
+          extraRows.push({
+            report_id: reportId,
+            photo_path: path,
+            photo_url: pub.publicUrl,
+          });
+        }
+
+        if (extraRows.length > 0) {
+          await withTimeout(
+            saveHazardExtraPhotos({
+              accessToken,
+              reportId,
+              photos: extraRows,
+            }),
+            12000,
+            "추가 사진 저장"
+          );
+        }
+      }
 
       let pushFailed = false;
       let pushErrorMsg = "";
@@ -718,6 +802,16 @@ export default function MainMenu() {
       setReportPhotos([]);
       setReportComment("");
     } catch (e: any) {
+      if (createdReportId) {
+        try {
+          await supabase.from("hazard_reports").delete().eq("id", createdReportId);
+        } catch {}
+      }
+      if (uploadedPaths.length > 0) {
+        try {
+          await supabase.storage.from("hazard-reports").remove(uploadedPaths);
+        } catch {}
+      }
       Alert.alert("제보 실패", e?.message ?? String(e));
     } finally {
       setReportUploading(false);
@@ -920,7 +1014,7 @@ export default function MainMenu() {
       setClockPhase("완료");
       setAtt(((res as any).data as AttendanceRow) ?? null);
 
-      Alert.alert("출근 완료", `출근: ${formatKSTTime(nowIso)}`);
+      Alert.alert(`${clockInLabel} 완료`, `${clockInLabel}: ${formatKSTTime(nowIso)}`);
       loadAttendanceForDate(selectedWorkDate).catch(() => {});
     } catch (e: any) {
       Alert.alert("출근 실패", e?.message ?? String(e));
@@ -929,7 +1023,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockInLabel, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   /** ✅ 퇴근: work_shifts + work_events */
   const doClockOut = useCallback(async () => {
@@ -1014,7 +1108,7 @@ export default function MainMenu() {
       setClockPhase("완료");
       setAtt(((res as any).data as AttendanceRow) ?? null);
 
-      Alert.alert("퇴근 완료", `퇴근: ${formatKSTTime(nowIso)}`);
+      Alert.alert(`${clockOutLabel} 완료`, `${clockOutLabel}: ${formatKSTTime(nowIso)}`);
       loadAttendanceForDate(selectedWorkDate).catch(() => {});
     } catch (e: any) {
       Alert.alert("퇴근 실패", e?.message ?? String(e));
@@ -1023,7 +1117,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockOutLabel, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   const onClockIn = () => {
     if (busy) return;
@@ -1048,6 +1142,9 @@ export default function MainMenu() {
   };
 
   const approveRowVisible = useMemo(() => !loadingAdmin && isAdmin, [loadingAdmin, isAdmin]);
+  const isDriverUser = useMemo(() => workPart === "기사", [workPart]);
+  const clockInLabel = isDriverUser ? "입차" : "출근";
+  const clockOutLabel = isDriverUser ? "출차" : "퇴근";
   const todayStr = kstNowDateString();
   const selectedDateLabel = useMemo(() => formatKstDateLabel(selectedWorkDate), [selectedWorkDate]);
   const isViewingToday = selectedWorkDate === todayStr;
@@ -1165,7 +1262,7 @@ export default function MainMenu() {
                 <View style={styles.btnInner}>
                   <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
                   <Text style={att?.clock_in_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                    {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : "출근"}
+                    {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : clockInLabel}
                   </Text>
                 </View>
               </Pressable>
@@ -1182,7 +1279,7 @@ export default function MainMenu() {
                 <View style={styles.btnInner}>
                   <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
                   <Text style={att?.clock_out_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                    {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : "퇴근"}
+                    {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : clockOutLabel}
                   </Text>
                 </View>
               </Pressable>
@@ -1244,7 +1341,7 @@ export default function MainMenu() {
         </Pressable>
       </ScrollView>
 
-      {/* 출근 확인 모달 */}
+      {/* 출근/입차 확인 모달 */}
       <Modal visible={clockInConfirmOpen} transparent animationType="fade" onRequestClose={() => setClockInConfirmOpen(false)}>
         <Pressable
           style={styles.backdrop}
@@ -1255,7 +1352,7 @@ export default function MainMenu() {
         />
         <View style={[styles.modalBox, { top: 220 }]}>
           <View style={styles.modalInner}>
-            <Text style={styles.modalTitle}>확인</Text>
+            <Text style={styles.modalTitle}>{clockInLabel} 확인</Text>
             <Text style={styles.modalBody}>오늘 근무하기에 건강상태가 괜찮습니까?</Text>
 
             <View style={styles.rowGap}>
@@ -1280,7 +1377,7 @@ export default function MainMenu() {
         </View>
       </Modal>
 
-      {/* 퇴근 확인 모달 */}
+      {/* 퇴근/출차 확인 모달 */}
       <Modal visible={clockOutConfirmOpen} transparent animationType="fade" onRequestClose={() => setClockOutConfirmOpen(false)}>
         <Pressable
           style={styles.backdrop}
@@ -1291,8 +1388,8 @@ export default function MainMenu() {
         />
         <View style={[styles.modalBox, { top: 220 }]}>
           <View style={styles.modalInner}>
-            <Text style={styles.modalTitle}>확인</Text>
-            <Text style={styles.modalBody}>퇴근 처리를 진행할까요?</Text>
+            <Text style={styles.modalTitle}>{clockOutLabel} 확인</Text>
+            <Text style={styles.modalBody}>{clockOutLabel} 처리를 진행할까요?</Text>
 
             <View style={styles.rowGap}>
               <Pressable onPress={() => setClockOutConfirmOpen(false)} style={[styles.btn, styles.btnOutline]}>

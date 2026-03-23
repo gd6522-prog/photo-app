@@ -10,14 +10,6 @@ function inferPendingLabel(row: Partial<Row>) {
   const explicit = String(row.pending_label ?? "").trim();
   if (explicit) return explicit;
 
-  const created = new Date(String(row.created_at ?? ""));
-  if (!Number.isNaN(created.getTime())) {
-    const ageMs = Date.now() - created.getTime();
-    if (ageMs > 24 * 60 * 60 * 1000) {
-      return "비밀번호 5회 오류";
-    }
-  }
-
   return "신규가입";
 }
 
@@ -100,6 +92,27 @@ export default function ApproveScreen() {
     if (!res.ok) throw new Error((payload as any)?.error || "반려 및 삭제 실패");
   }, []);
 
+  const clearPendingLabel = useCallback(async (userId: string) => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+
+    const accessToken = String(data.session?.access_token ?? "").trim();
+    if (!accessToken) throw new Error("관리자 세션이 없습니다.");
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ action: "clear_pending_label", user_id: userId }),
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((payload as any)?.error || "잠금 초기화 실패");
+  }, []);
+
   const setStatus = useCallback(
     async (userId: string, status: "approved" | "rejected") => {
       try {
@@ -111,6 +124,11 @@ export default function ApproveScreen() {
             p_status: status,
           });
           if (error) throw error;
+          try {
+            await clearPendingLabel(userId);
+          } catch (clearErr) {
+            console.warn("[approve] clear pending label failed", clearErr);
+          }
         }
 
         setRows((prev) => prev.filter((r) => r.id !== userId));
@@ -119,7 +137,7 @@ export default function ApproveScreen() {
         Alert.alert("처리 실패", e?.message ?? "승인/반려 실패");
       }
     },
-    [rejectAndDeleteUser]
+    [clearPendingLabel, rejectAndDeleteUser]
   );
 
   return (

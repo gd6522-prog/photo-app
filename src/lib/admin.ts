@@ -24,14 +24,6 @@ function inferPendingLabel(row: Partial<PendingApprovalRow>) {
   const explicit = String(row.pending_label ?? "").trim();
   if (explicit) return explicit;
 
-  const created = new Date(String(row.created_at ?? ""));
-  if (!Number.isNaN(created.getTime())) {
-    const ageMs = Date.now() - created.getTime();
-    if (ageMs > 24 * 60 * 60 * 1000) {
-      return "비밀번호 5회 오류";
-    }
-  }
-
   return "신규가입";
 }
 

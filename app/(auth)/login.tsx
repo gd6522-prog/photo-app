@@ -108,6 +108,32 @@ async function markProfilePendingByPhone(phone: string) {
   return await res.json().catch(() => ({}));
 }
 
+async function getIdentityStatusByPhone(phone: string) {
+  const rawDigits = phone.startsWith("+82") ? `0${phone.slice(3)}` : phone;
+  const email = phoneToEmail(phone);
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/manage-account`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify({
+      action: "get_identity_status",
+      phone,
+      phone_raw: rawDigits,
+      email,
+    }),
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error((payload as any)?.error || "failed to get identity status");
+  }
+
+  return await res.json().catch(() => ({}));
+}
+
 export default function LoginScreen() {
   const router = useRouter();
 
@@ -169,8 +195,27 @@ export default function LoginScreen() {
           AsyncStorage.getItem(loginLockKey(e164)),
         ]);
         const count = Number(countRaw ?? "0");
-        setLoginFailCount(Number.isFinite(count) ? count : 0);
-        setLoginLocked(lockRaw === "1");
+        const localCount = Number.isFinite(count) ? count : 0;
+        const localLocked = lockRaw === "1";
+
+        let serverPending = false;
+        try {
+          const status = await getIdentityStatusByPhone(e164);
+          serverPending = String(status?.approval_status ?? "").trim() === "pending";
+        } catch {}
+
+        if (localLocked && !serverPending) {
+          await Promise.all([
+            AsyncStorage.removeItem(loginFailKey(e164)),
+            AsyncStorage.removeItem(loginLockKey(e164)),
+          ]);
+          setLoginFailCount(0);
+          setLoginLocked(false);
+          return;
+        }
+
+        setLoginFailCount(localCount);
+        setLoginLocked(localLocked && serverPending);
       } catch {
         setLoginFailCount(0);
         setLoginLocked(false);
@@ -206,7 +251,7 @@ export default function LoginScreen() {
     try {
       const prevRaw = await AsyncStorage.getItem(key);
       const prev = Number(prevRaw ?? "0");
-      nextCount = Number.isFinite(prev) ? prev + 1 : 1;
+      nextCount = Number.isFinite(prev) ? Math.min(prev + 1, MAX_LOGIN_FAILS) : 1;
       await AsyncStorage.setItem(key, String(nextCount));
     } catch {
       nextCount = 1;
@@ -224,23 +269,17 @@ export default function LoginScreen() {
       pendingError = String(e?.message ?? e ?? "");
     }
 
-    try {
-      await AsyncStorage.setItem(loginLockKey(targetE164), "1");
-    } catch {}
-
-    setLoginLocked(true);
+    if (!pendingError) {
+      try {
+        await AsyncStorage.setItem(loginLockKey(targetE164), "1");
+      } catch {}
+      setLoginLocked(true);
+    }
     return { nextCount, pendingResult, pendingError };
   };
 
   const onLogin = async () => {
     if (!canSubmit || loading) return;
-    if (e164 && loginLocked) {
-      try {
-        await markProfilePendingByPhone(e164);
-      } catch {}
-      Alert.alert("승인 대기", "비밀번호를 5회 실패하여 승인대기 상태입니다. 관리자 승인 후 다시 로그인해 주세요.");
-      return;
-    }
 
     setLoading(true);
 
@@ -296,10 +335,7 @@ export default function LoginScreen() {
           return;
         }
 
-        const source = String(failState.pendingResult?.source ?? "").trim();
-        const userId = String(failState.pendingResult?.user_id ?? "").trim();
-        const detail = source || userId ? `\nsource=${source || "-"} user=${userId || "-"}` : "";
-        Alert.alert("로그인 실패", `비밀번호를 5회 실패해서 승인대기 상태로 바뀌었습니다.${detail}`);
+        Alert.alert("로그인 실패", "비밀번호를 5회 실패해서 승인대기 상태로 바뀌었습니다.");
         return;
       }
 
@@ -309,8 +345,11 @@ export default function LoginScreen() {
     }
   };
 
-  const failGuide =
-    loginFailCount > 0 ? `로그인 실패 ${loginFailCount}/${MAX_LOGIN_FAILS}` : "전화번호와 비밀번호로 로그인하세요.";
+  const failGuide = loginLocked
+    ? "5회 실패로 승인대기 상태입니다.\n관리자 승인 후 다시 로그인해 주세요."
+    : loginFailCount > 0
+      ? `로그인 실패 ${loginFailCount}/${MAX_LOGIN_FAILS}`
+      : "전화번호와 비밀번호로 로그인하세요.";
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
@@ -435,11 +474,7 @@ export default function LoginScreen() {
 
             <View style={{ marginTop: 4, marginBottom: 2 }}>
               <Text style={{ color: "#6B7280", textAlign: "center" }}>{failGuide}</Text>
-              {loginLocked ? (
-                <Text style={{ marginTop: 6, color: "#DC2626", textAlign: "center", fontWeight: "800" }}>
-                  5회 실패로 승인대기 상태입니다. 관리자 승인 후 다시 로그인해 주세요.
-                </Text>
-              ) : loginFailCount > 0 ? (
+              {!loginLocked && loginFailCount > 0 ? (
                 <Text style={{ marginTop: 6, color: "#DC2626", textAlign: "center", fontWeight: "800" }}>
                   5회 실패하면 승인대기 상태로 변경됩니다.
                 </Text>

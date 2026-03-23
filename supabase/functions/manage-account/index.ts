@@ -1,7 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 type RequestBody = {
-  action?: "cleanup_incomplete_signup" | "reject_delete_user" | "mark_pending_by_identity" | "list_pending_users" | "get_pending_labels";
+  action?:
+    | "cleanup_incomplete_signup"
+    | "reject_delete_user"
+    | "mark_pending_by_identity"
+    | "get_identity_status"
+    | "list_pending_users"
+    | "get_pending_labels"
+    | "clear_pending_label"
+    | "unlock_after_password_reset";
   user_id?: string | null;
   user_ids?: string[] | null;
   phone?: string | null;
@@ -46,14 +54,6 @@ function normalizePhone(value: unknown) {
 
 function inferPendingLabel(createdAt: unknown, currentLabel: string) {
   if (currentLabel.trim()) return currentLabel.trim();
-
-  const created = new Date(String(createdAt ?? ""));
-  if (!Number.isNaN(created.getTime())) {
-    const ageMs = Date.now() - created.getTime();
-    if (ageMs > 24 * 60 * 60 * 1000) {
-      return "비밀번호 5회 오류";
-    }
-  }
 
   return "신규가입";
 }
@@ -246,6 +246,38 @@ async function markPendingByIdentity(admin: ReturnType<typeof createClient>, bod
   });
 }
 
+async function getIdentityStatus(admin: ReturnType<typeof createClient>, body: RequestBody) {
+  const match = await findUserIdByIdentity(admin, body);
+  if (!match?.userId) {
+    return json(200, {
+      ok: true,
+      found: false,
+      user_id: null,
+      approval_status: null,
+      pending_label: "",
+    });
+  }
+
+  const { data: prof, error: profErr } = await admin
+    .from("profiles")
+    .select("approval_status")
+    .eq("id", match.userId)
+    .maybeSingle();
+
+  if (profErr) throw profErr;
+
+  const user = await getAuthUserById(admin, match.userId);
+  const pendingLabel = String((user.user_metadata ?? {}).pending_label ?? (user.app_metadata ?? {}).pending_label ?? "").trim();
+
+  return json(200, {
+    ok: true,
+    found: true,
+    user_id: match.userId,
+    approval_status: String(prof?.approval_status ?? ""),
+    pending_label: pendingLabel,
+  });
+}
+
 async function listPendingUsers(admin: ReturnType<typeof createClient>) {
   const { data, error } = await admin
     .from("profiles")
@@ -303,6 +335,33 @@ async function getPendingLabels(admin: ReturnType<typeof createClient>, body: Re
   return json(200, { ok: true, labels: result });
 }
 
+async function clearPendingLabel(admin: ReturnType<typeof createClient>, actorId: string, body: RequestBody) {
+  await ensureAdmin(admin, actorId);
+
+  const targetId = String(body.user_id ?? "").trim();
+  if (!targetId) return json(400, { error: "Missing user_id" });
+
+  await updatePendingLabel(admin, targetId, "");
+  return json(200, { ok: true, user_id: targetId, pending_label: "" });
+}
+
+async function unlockAfterPasswordReset(admin: ReturnType<typeof createClient>, actorId: string) {
+  const { error: profErr } = await admin
+    .from("profiles")
+    .upsert(
+      {
+        id: actorId,
+        approval_status: "approved",
+      },
+      { onConflict: "id" }
+    );
+
+  if (profErr) throw profErr;
+
+  await updatePendingLabel(admin, actorId, "");
+  return json(200, { ok: true, user_id: actorId, approval_status: "approved", pending_label: "" });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflight();
   if (req.method !== "POST") return json(405, { error: "Method Not Allowed" });
@@ -324,6 +383,10 @@ Deno.serve(async (req) => {
       return await markPendingByIdentity(admin, body);
     }
 
+    if (body.action === "get_identity_status") {
+      return await getIdentityStatus(admin, body);
+    }
+
     if (body.action === "get_pending_labels") {
       return await getPendingLabels(admin, body);
     }
@@ -335,6 +398,14 @@ Deno.serve(async (req) => {
 
     if (body.action === "list_pending_users") {
       return await listPendingUsers(admin);
+    }
+
+    if (body.action === "clear_pending_label") {
+      return await clearPendingLabel(admin, actor.id, body);
+    }
+
+    if (body.action === "unlock_after_password_reset") {
+      return await unlockAfterPasswordReset(admin, actor.id);
     }
 
     if (body.action === "cleanup_incomplete_signup") {
