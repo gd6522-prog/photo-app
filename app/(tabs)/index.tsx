@@ -31,6 +31,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { getPendingCount, isAdminUser } from "../../src/lib/admin";
 import { useAuth } from "../../src/lib/auth";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
+import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -62,6 +63,7 @@ const ALLOW_FALLBACK_CLOCK = false;
 const GPS_TOTAL_TIMEOUT_MS = 25000;
 const PUSH_NOTIFY_TIMEOUT_MS = 12000;
 const PUSH_NOTIFY_MAX_ATTEMPTS = 3;
+const TEMP_DAILY_WORK_PARTS = ["박스존", "이너존", "슬라존", "경량존", "이형존", "담배존"] as const;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -381,6 +383,7 @@ export default function MainMenu() {
   const [busy, setBusy] = useState(false);
   const [displayName, setDisplayName] = useState<string>("");
   const [workPart, setWorkPart] = useState<string>("");
+  const [todayTempWorkPart, setTodayTempWorkPart] = useState<string>("");
 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
@@ -394,6 +397,7 @@ export default function MainMenu() {
   const [clockInConfirmOpen, setClockInConfirmOpen] = useState(false);
   const [clockOutConfirmOpen, setClockOutConfirmOpen] = useState(false);
   const [clockPhase, setClockPhase] = useState<string>("");
+  const [selectedTempDailyPart, setSelectedTempDailyPart] = useState<string>("");
 
   const watchdogRef = useRef<any>(null);
   const startWatchdog = useCallback(
@@ -477,6 +481,15 @@ export default function MainMenu() {
       const profName = ((profRes as any).data?.name ?? "").trim();
       const profWorkPart = ((profRes as any).data?.work_part ?? "").trim();
       setWorkPart(profWorkPart);
+      if (profWorkPart === "임시직") {
+        try {
+          setTodayTempWorkPart(await getTodayTempWorkPart(u.id));
+        } catch {
+          setTodayTempWorkPart("");
+        }
+      } else {
+        setTodayTempWorkPart("");
+      }
       if (!(profRes as any).error && profName) {
         setDisplayName(profName);
         return;
@@ -498,6 +511,7 @@ export default function MainMenu() {
       const metaName = (meta?.name || meta?.full_name || meta?.nickname || "").trim();
       const metaWorkPart = (meta?.work_part || "").trim();
       setWorkPart(metaWorkPart);
+      setTodayTempWorkPart("");
       setDisplayName(metaName || "이름 미등록");
     }
   }, [user]);
@@ -574,13 +588,27 @@ export default function MainMenu() {
   useFocusEffect(
     useCallback(() => {
       loadAdmin();
+      loadProfileName();
       loadAttendanceForDate(selectedWorkDate);
       return () => {};
-    }, [loadAdmin, loadAttendanceForDate, selectedWorkDate])
+    }, [loadAdmin, loadAttendanceForDate, loadProfileName, selectedWorkDate])
   );
 
-  const goUpload = () => router.push("/(tabs)/upload");
-  const goList = () => router.push("/(tabs)/photo-list");
+  const ensureTemporaryWorkerReady = () => {
+    if (workPart !== "임시직") return true;
+    if (activeWorkPart) return true;
+    Alert.alert("출근 필요", "임시직은 출근 확인에서 오늘 근무파트를 선택한 뒤 업로드/조회를 사용할 수 있습니다.");
+    return false;
+  };
+
+  const goUpload = () => {
+    if (!ensureTemporaryWorkerReady()) return;
+    router.push("/(tabs)/upload");
+  };
+  const goList = () => {
+    if (!ensureTemporaryWorkerReady()) return;
+    router.push("/(tabs)/photo-list");
+  };
   const goHazardList = () => router.push("/(tabs)/hazard-reports");
 
   const onLogout = async () => {
@@ -1004,7 +1032,10 @@ export default function MainMenu() {
             lng: loc.lng,
             accuracy_m: loc.accuracy ?? null,
             source,
-            payload: { work_date: workDate },
+            payload: {
+              work_date: workDate,
+              today_work_part: isTemporaryWorker ? selectedTempDailyPart || null : null,
+            },
           }),
           12000,
           "출근 이벤트"
@@ -1013,6 +1044,8 @@ export default function MainMenu() {
 
       setClockPhase("완료");
       setAtt(((res as any).data as AttendanceRow) ?? null);
+      if (isTemporaryWorker && selectedTempDailyPart) setTodayTempWorkPart(selectedTempDailyPart);
+      setSelectedTempDailyPart("");
 
       Alert.alert(`${clockInLabel} 완료`, `${clockInLabel}: ${formatKSTTime(nowIso)}`);
       loadAttendanceForDate(selectedWorkDate).catch(() => {});
@@ -1023,7 +1056,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, clockInLabel, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockInLabel, getCurrentLocationChecked, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedTempDailyPart, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   /** ✅ 퇴근: work_shifts + work_events */
   const doClockOut = useCallback(async () => {
@@ -1107,6 +1140,7 @@ export default function MainMenu() {
 
       setClockPhase("완료");
       setAtt(((res as any).data as AttendanceRow) ?? null);
+      if (isTemporaryWorker) setTodayTempWorkPart("");
 
       Alert.alert(`${clockOutLabel} 완료`, `${clockOutLabel}: ${formatKSTTime(nowIso)}`);
       loadAttendanceForDate(selectedWorkDate).catch(() => {});
@@ -1117,7 +1151,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, clockOutLabel, getCurrentLocationChecked, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockOutLabel, getCurrentLocationChecked, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   const onClockIn = () => {
     if (busy) return;
@@ -1125,6 +1159,7 @@ export default function MainMenu() {
       Alert.alert("안내", `이미 출근 처리됨 (${formatKSTTime(att.clock_in_at)})`);
       return;
     }
+    setSelectedTempDailyPart("");
     setClockInConfirmOpen(true);
   };
 
@@ -1143,6 +1178,11 @@ export default function MainMenu() {
 
   const approveRowVisible = useMemo(() => !loadingAdmin && isAdmin, [loadingAdmin, isAdmin]);
   const isDriverUser = useMemo(() => workPart === "기사", [workPart]);
+  const isTemporaryWorker = useMemo(() => workPart === "임시직", [workPart]);
+  const activeWorkPart = useMemo(
+    () => (isTemporaryWorker ? (todayTempWorkPart || "").trim() : (workPart || "").trim()),
+    [isTemporaryWorker, todayTempWorkPart, workPart]
+  );
   const clockInLabel = isDriverUser ? "입차" : "출근";
   const clockOutLabel = isDriverUser ? "출차" : "퇴근";
   const todayStr = kstNowDateString();
@@ -1344,19 +1384,47 @@ export default function MainMenu() {
       {/* 출근/입차 확인 모달 */}
       <Modal visible={clockInConfirmOpen} transparent animationType="fade" onRequestClose={() => setClockInConfirmOpen(false)}>
         <Pressable
-          style={styles.backdrop}
+          style={styles.backdropFill}
           onPress={() => {
             Keyboard.dismiss();
+            setSelectedTempDailyPart("");
             setClockInConfirmOpen(false);
           }}
         />
-        <View style={[styles.modalBox, { top: 220 }]}>
+        <View style={styles.modalCenterWrap}>
+        <View style={styles.modalBox}>
           <View style={styles.modalInner}>
             <Text style={styles.modalTitle}>{clockInLabel} 확인</Text>
             <Text style={styles.modalBody}>오늘 근무하기에 건강상태가 괜찮습니까?</Text>
 
+            {isTemporaryWorker ? (
+              <View style={styles.tempWorkPartSection}>
+                <Text style={styles.tempWorkPartLabel}>오늘 근무파트</Text>
+                <View style={styles.tempWorkPartWrap}>
+                  {TEMP_DAILY_WORK_PARTS.map((part) => {
+                    const selected = selectedTempDailyPart === part;
+                    return (
+                      <Pressable
+                        key={part}
+                        onPress={() => setSelectedTempDailyPart(part)}
+                        style={[styles.tempWorkPartChip, selected && styles.tempWorkPartChipActive]}
+                      >
+                        <Text style={[styles.tempWorkPartChipText, selected && styles.tempWorkPartChipTextActive]}>{part}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
             <View style={styles.rowGap}>
-              <Pressable onPress={() => setClockInConfirmOpen(false)} style={[styles.btn, styles.btnOutline]}>
+              <Pressable
+                onPress={() => {
+                  setSelectedTempDailyPart("");
+                  setClockInConfirmOpen(false);
+                }}
+                style={[styles.btn, styles.btnOutline]}
+              >
                 <Text style={styles.btnText}>아니요</Text>
               </Pressable>
 
@@ -1365,7 +1433,8 @@ export default function MainMenu() {
                   setClockInConfirmOpen(false);
                   setTimeout(() => doClockIn(), 300);
                 }}
-                style={[styles.btn, styles.btnSuccess]}
+                disabled={isTemporaryWorker && !selectedTempDailyPart}
+                style={[styles.btn, styles.btnSuccess, isTemporaryWorker && !selectedTempDailyPart && styles.btnDisabled]}
               >
                 <View style={styles.btnInner}>
                   <MaterialCommunityIcons name="check" size={18} color="#fff" />
@@ -1375,18 +1444,20 @@ export default function MainMenu() {
             </View>
           </View>
         </View>
+        </View>
       </Modal>
 
       {/* 퇴근/출차 확인 모달 */}
       <Modal visible={clockOutConfirmOpen} transparent animationType="fade" onRequestClose={() => setClockOutConfirmOpen(false)}>
         <Pressable
-          style={styles.backdrop}
+          style={styles.backdropFill}
           onPress={() => {
             Keyboard.dismiss();
             setClockOutConfirmOpen(false);
           }}
         />
-        <View style={[styles.modalBox, { top: 220 }]}>
+        <View style={styles.modalCenterWrap}>
+        <View style={styles.modalBox}>
           <View style={styles.modalInner}>
             <Text style={styles.modalTitle}>{clockOutLabel} 확인</Text>
             <Text style={styles.modalBody}>{clockOutLabel} 처리를 진행할까요?</Text>
@@ -1410,6 +1481,7 @@ export default function MainMenu() {
               </Pressable>
             </View>
           </View>
+        </View>
         </View>
       </Modal>
 
@@ -1681,10 +1753,16 @@ const styles = StyleSheet.create({
   footnote: { color: THEME.muted, fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },
 
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  backdropFill: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.35)" },
+  modalCenterWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 18,
+  },
   modalBox: {
-    position: "absolute",
-    left: 18,
-    right: 18,
+    width: "100%",
+    maxWidth: 560,
     backgroundColor: THEME.surface,
     borderRadius: 18,
     borderWidth: 1,
@@ -1699,6 +1777,33 @@ const styles = StyleSheet.create({
   modalInner: { padding: 16, gap: 10 },
   modalTitle: { fontSize: 16, fontWeight: "900", color: THEME.text, letterSpacing: -0.2 },
   modalBody: { color: "#374151", fontWeight: "700", lineHeight: 20 },
+  tempWorkPartSection: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: THEME.soft,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  tempWorkPartLabel: { color: THEME.text, fontWeight: "800", fontSize: 13 },
+  tempWorkPartWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  tempWorkPartChip: {
+    minWidth: "30%",
+    paddingHorizontal: 12,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: THEME.surface,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  tempWorkPartChipActive: {
+    backgroundColor: "#ECFDF3",
+    borderColor: "#16A34A",
+  },
+  tempWorkPartChipText: { color: "#374151", fontWeight: "800", fontSize: 14 },
+  tempWorkPartChipTextActive: { color: "#15803D" },
 
   reportKav: { position: "absolute", left: 16, right: 16, top: 110 },
   reportSheet: {

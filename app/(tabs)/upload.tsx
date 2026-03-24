@@ -22,6 +22,7 @@ import {
   View,
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
+import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
 import { getWorkPartOptionsExceptDriver, Option } from "../../src/lib/workParts";
 
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
@@ -93,6 +94,21 @@ function sortStores(a: StoreMapRow, b: StoreMapRow) {
   if (seqA !== seqB) return seqA - seqB;
 
   return String(a.store_code ?? "").localeCompare(String(b.store_code ?? ""));
+}
+
+function normalizeStoreCode(input: string | null | undefined) {
+  const digits = String(input ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.length >= 5 ? digits.slice(0, 5) : digits.padStart(5, "0");
+}
+
+async function loadInspectionOrderStoreCodes() {
+  const invokeRes = await supabase.functions.invoke("list-inspection-order-stores", { body: {} });
+  const payload = invokeRes.data as { ok?: boolean; store_codes?: string[]; error?: string } | null;
+  if (invokeRes.error) throw invokeRes.error;
+  if (!payload?.ok) throw new Error(payload?.error || "검수 점포 기준 조회에 실패했습니다.");
+
+  return new Set((payload.store_codes ?? []).map((code) => normalizeStoreCode(code)).filter(Boolean));
 }
 
 const THEME = {
@@ -211,6 +227,7 @@ export default function UploadScreen() {
   const [busy, setBusy] = useState(false);
 
   const [myWorkPart, setMyWorkPart] = useState<string>("");
+  const [canManageWorkPart, setCanManageWorkPart] = useState(false);
 
   const [doneStoreSet, setDoneStoreSet] = useState<Set<string>>(new Set());
   const [doneLoading, setDoneLoading] = useState(false);
@@ -270,13 +287,25 @@ export default function UploadScreen() {
   };
 
   const loadMyProfile = async (userId: string) => {
-    const { data, error } = await supabase.from("profiles").select("work_part, car_no").eq("id", userId).single();
+    const { data, error } = await supabase.from("profiles").select("work_part, car_no, is_admin").eq("id", userId).single();
     if (error) throw error;
 
-    const wp = String(data?.work_part ?? "").trim();
-    setMyWorkPart(wp);
+    const rawWp = String(data?.work_part ?? "").trim();
+    let displayWp = rawWp;
+    if (rawWp === "임시직") {
+      const todayWp = await getTodayTempWorkPart(userId);
+      if (!todayWp) {
+        Alert.alert("출근 필요", "임시직은 출근 확인에서 오늘 근무파트를 선택한 뒤 업로드를 사용할 수 있습니다.");
+        router.replace("/(tabs)");
+        throw new Error("임시직 오늘 근무파트 미선택");
+      }
+      displayWp = todayWp;
+    }
 
-    const driverFlag = wp.includes("기사");
+    setMyWorkPart(displayWp);
+    setCanManageWorkPart(!!data?.is_admin || rawWp === "관리자");
+
+    const driverFlag = rawWp.includes("기사");
     setIsDriver(driverFlag);
 
     if (driverFlag) {
@@ -289,7 +318,7 @@ export default function UploadScreen() {
       setMode("search");
     }
 
-    return wp;
+    return displayWp;
   };
 
   const loadDoneStoresForToday = async (workPart: string, cat?: string) => {
@@ -480,11 +509,20 @@ export default function UploadScreen() {
     if (!session) return;
 
     setInspectLoading(true);
+    setInspectStores([]);
     try {
-      const { data, error } = await supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("is_inspection", true).limit(5000);
+      const [storeResult, orderStoreCodes] = await Promise.all([
+        supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("is_inspection", true).limit(5000),
+        loadInspectionOrderStoreCodes(),
+      ]);
+
+      const { data, error } = storeResult;
       if (error) throw error;
 
-      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
+      let rows = ((data ?? []) as StoreMapRow[]).slice();
+      rows = rows.filter((row) => orderStoreCodes.has(normalizeStoreCode(row.store_code)));
+
+      rows.sort(sortStores);
       setInspectStores(rows);
 
       const wp = (myWorkPart ?? "").trim();
@@ -797,7 +835,7 @@ export default function UploadScreen() {
     ]);
   };
 
-  const showWorkPartButton = myWorkPart === "관리자" && !isDriver;
+  const showWorkPartButton = canManageWorkPart && !isDriver;
 
   const driverDropdownOptions: CarPick[] = useMemo(() => {
     if (!isDriver) return [];
@@ -885,8 +923,8 @@ export default function UploadScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={keyboardOffset}
+        behavior={Platform.OS === "ios" ? undefined : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : keyboardOffset}
       >
         {/* ✅ 여기서 터치 시작 시 키보드만 내림(터치 먹지 않음) */}
         <View style={{ flex: 1 }} onTouchStart={() => Keyboard.dismiss()}>
@@ -904,6 +942,13 @@ export default function UploadScreen() {
                     <Ionicons name="chevron-down" size={14} color={THEME.blue} />
                   </Pressable>
                 ) : null}
+
+                {!isDriver && !!myWorkPart && (
+                  <View style={styles.headerChip}>
+                    <Ionicons name="briefcase-outline" size={16} color={THEME.blue} />
+                    <Text style={styles.headerChipText}>{myWorkPart}</Text>
+                  </View>
+                )}
 
                 {showWorkPartButton && (
                   <Pressable

@@ -7,6 +7,7 @@ import {
   Modal,
   Pressable,
   SafeAreaView,
+  ScrollView,
   Text,
   View,
 } from "react-native";
@@ -17,8 +18,8 @@ type ReportRow = {
   id: string;
   user_id: string;
   comment: string | null;
-  photo_path: string; // 대표 1장 (NOT NULL)
-  photo_url: string;  // 대표 1장 (NOT NULL)
+  photo_path: string;
+  photo_url: string;
   created_at: string;
 };
 
@@ -29,6 +30,20 @@ type PhotoRow = {
   photo_url: string | null;
   created_at: string;
 };
+
+type ResolutionRow = {
+  report_id: string;
+  after_path: string | null;
+  after_public_url: string | null;
+  after_memo: string | null;
+  improved_by: string | null;
+  improved_at: string | null;
+  planned_due_date: string | null;
+};
+
+type StatusKey = "open" | "pending" | "done";
+
+type StatusFilter = "all" | StatusKey;
 
 async function fetchHazardReportPhotos(params: {
   accessToken: string;
@@ -62,7 +77,8 @@ async function fetchHazardReportPhotos(params: {
   return Array.isArray((data as any)?.rows) ? ((data as any).rows as PhotoRow[]) : [];
 }
 
-function formatKST(ts: string): string {
+function formatKST(ts: string | null | undefined): string {
+  if (!ts) return "-";
   const d = new Date(ts);
   const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const yyyy = kst.getUTCFullYear();
@@ -73,22 +89,47 @@ function formatKST(ts: string): string {
   return `${yyyy}-${mm}-${dd} ${HH}:${MI}`;
 }
 
+function todayYmdKst() {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10);
+}
+
+function getHazardStatus(resolution: ResolutionRow | null): {
+  key: StatusKey;
+  label: string;
+  bg: string;
+  border: string;
+  text: string;
+} {
+  const today = todayYmdKst();
+  if (resolution?.after_public_url) {
+    return { key: "done", label: "처리완료", bg: "#ECFDF3", border: "#A7F3D0", text: "#15803D" };
+  }
+  if (resolution?.planned_due_date && resolution.planned_due_date >= today) {
+    return { key: "pending", label: "처리대기", bg: "#FFF7ED", border: "#FDBA74", text: "#C2410C" };
+  }
+  return { key: "open", label: "미처리", bg: "#FEF2F2", border: "#FECACA", text: "#DC2626" };
+}
+
 export default function HazardReportsScreen() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-
   const [isAdmin, setIsAdmin] = useState(false);
 
   const [reports, setReports] = useState<ReportRow[]>([]);
   const [photoMap, setPhotoMap] = useState<Record<string, PhotoRow[]>>({});
+  const [resolutionMap, setResolutionMap] = useState<Record<string, ResolutionRow | null>>({});
+  const [filter, setFilter] = useState<StatusFilter>("all");
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState("");
-  const [previewPhotos, setPreviewPhotos] = useState<Array<{ url: string; path: string }>>([]);
+  const [previewPhotos, setPreviewPhotos] = useState<{ url: string; path: string }[]>([]);
   const [previewComment, setPreviewComment] = useState("");
   const [previewReportId, setPreviewReportId] = useState<string>("");
+  const [previewResolution, setPreviewResolution] = useState<ResolutionRow | null>(null);
 
   const mounted = useRef(false);
 
@@ -124,7 +165,6 @@ export default function HazardReportsScreen() {
 
     setLoading(true);
     try {
-      // ✅ RLS 정책이 "본인 or 관리자 전체"라서, 여기서는 그냥 select만 하면 됨
       const { data, error } = await supabase
         .from("hazard_reports")
         .select("id, user_id, comment, photo_path, photo_url, created_at")
@@ -136,34 +176,54 @@ export default function HazardReportsScreen() {
       const rows = (data ?? []) as ReportRow[];
       setReports(rows);
 
-      // ✅ 여러장 테이블이 있으면 같이 가져오고, 없으면 무시(앱은 정상 동작)
       const reportIds = rows.map((r) => r.id);
       if (reportIds.length === 0) {
         setPhotoMap({});
+        setResolutionMap({});
         return;
       }
 
-      const { data: photos, error: phErr } = await supabase
-        .from("hazard_report_photos")
-        .select("id, report_id, photo_path, photo_url, created_at")
-        .in("report_id", reportIds);
+      try {
+        const resolutionRes = await supabase
+          .from("hazard_report_resolutions")
+          .select("report_id, after_path, after_public_url, after_memo, improved_by, improved_at, planned_due_date")
+          .in("report_id", reportIds);
 
-      if (phErr) {
-        // 테이블 없거나 RLS면 여기서 에러 -> 대표 1장만으로 계속
+        if (!(resolutionRes as any).error) {
+          const map: Record<string, ResolutionRow | null> = {};
+          for (const row of ((resolutionRes as any).data ?? []) as ResolutionRow[]) {
+            map[row.report_id] = row;
+          }
+          setResolutionMap(map);
+        } else {
+          setResolutionMap({});
+        }
+      } catch {
+        setResolutionMap({});
+      }
+
+      try {
+        const { data: photos, error: phErr } = await supabase
+          .from("hazard_report_photos")
+          .select("id, report_id, photo_path, photo_url, created_at")
+          .in("report_id", reportIds);
+
+        if (!phErr) {
+          const map: Record<string, PhotoRow[]> = {};
+          for (const p of (photos ?? []) as PhotoRow[]) {
+            if (!map[p.report_id]) map[p.report_id] = [];
+            map[p.report_id].push(p);
+          }
+          for (const key of Object.keys(map)) {
+            map[key].sort((a, b) => (a.created_at > b.created_at ? -1 : 1));
+          }
+          setPhotoMap(map);
+        } else {
+          setPhotoMap({});
+        }
+      } catch {
         setPhotoMap({});
-        return;
       }
-
-      const map: Record<string, PhotoRow[]> = {};
-      for (const p of (photos ?? []) as PhotoRow[]) {
-        if (!map[p.report_id]) map[p.report_id] = [];
-        map[p.report_id].push(p);
-      }
-      // 정렬(시간순)
-      for (const k of Object.keys(map)) {
-        map[k].sort((a, b) => (a.created_at > b.created_at ? -1 : 1));
-      }
-      setPhotoMap(map);
     } catch (e: any) {
       Alert.alert("조회 오류", e?.message ?? String(e));
     } finally {
@@ -201,10 +261,10 @@ export default function HazardReportsScreen() {
           if (!map[p.report_id]) map[p.report_id] = [];
           map[p.report_id].push(p);
         }
-        for (const k of Object.keys(map)) {
-          map[k].sort((a, b) => (a.created_at > b.created_at ? -1 : 1));
+        for (const key of Object.keys(map)) {
+          map[key].sort((a, b) => (a.created_at > b.created_at ? -1 : 1));
         }
-        setPhotoMap(map);
+        setPhotoMap((prev) => ({ ...prev, ...map }));
       } catch {}
     })();
 
@@ -213,104 +273,163 @@ export default function HazardReportsScreen() {
     };
   }, [reports]);
 
-  const openPreview = (r: ReportRow) => {
-    const extra = photoMap[r.id] ?? [];
+  const statusCounts = useMemo(() => {
+    const counts = { open: 0, pending: 0, done: 0 };
+    for (const report of reports) {
+      counts[getHazardStatus(resolutionMap[report.id] ?? null).key] += 1;
+    }
+    return counts;
+  }, [reports, resolutionMap]);
 
-    // ✅ 대표 1장 + 추가사진들 합치기 (중복 url 방지)
-    const items: Array<{ url: string; path: string }> = [];
-    if (r.photo_url && r.photo_path) items.push({ url: r.photo_url, path: r.photo_path });
+  const visibleReports = useMemo(() => {
+    const items = reports.filter((report) => {
+      if (filter === "all") return true;
+      return getHazardStatus(resolutionMap[report.id] ?? null).key === filter;
+    });
 
-    for (const p of extra) {
-      const url = p.photo_url ?? "";
-      const path = p.photo_path ?? "";
+    const order = { open: 0, pending: 1, done: 2 } as const;
+    return [...items].sort((a, b) => {
+      const aResolution = resolutionMap[a.id] ?? null;
+      const bResolution = resolutionMap[b.id] ?? null;
+      const aStatus = getHazardStatus(aResolution).key;
+      const bStatus = getHazardStatus(bResolution).key;
+      if (aStatus !== bStatus) return order[aStatus] - order[bStatus];
+
+      if (aStatus === "done" && bStatus === "done") {
+        const aTime = new Date(aResolution?.improved_at ?? "").getTime();
+        const bTime = new Date(bResolution?.improved_at ?? "").getTime();
+        if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+          return bTime - aTime;
+        }
+      }
+
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+  }, [filter, reports, resolutionMap]);
+
+  const openPreview = (report: ReportRow) => {
+    const extra = photoMap[report.id] ?? [];
+    const items: { url: string; path: string }[] = [];
+
+    if (report.photo_url && report.photo_path) {
+      items.push({ url: report.photo_url, path: report.photo_path });
+    }
+    for (const photo of extra) {
+      const url = photo.photo_url ?? "";
+      const path = photo.photo_path ?? "";
       if (!url || !path) continue;
-      if (items.find((x) => x.path === path)) continue;
+      if (items.find((item) => item.path === path)) continue;
       items.push({ url, path });
     }
 
-    setPreviewReportId(r.id);
-    setPreviewTitle(`제보 ${formatKST(r.created_at)}  •  사진 ${items.length}장`);
-    setPreviewComment(r.comment ?? "");
+    setPreviewReportId(report.id);
+    setPreviewTitle(`제보 ${formatKST(report.created_at)} / 사진 ${items.length}장`);
+    setPreviewComment(report.comment ?? "");
     setPreviewPhotos(items);
+    setPreviewResolution(resolutionMap[report.id] ?? null);
     setPreviewOpen(true);
   };
 
-  // ✅ B 정책: 본인도 삭제 가능 + 관리자는 전체 삭제 가능
-  // (RLS가 막아주니까 UI에서 굳이 더 안 막아도 됨)
   const deleteReport = async (reportId: string) => {
     const session = await requireSession();
     if (!session) return;
 
-    Alert.alert(
-      "삭제 확인",
-      "이 제보를 완전삭제할까요?\n(사진 파일 + DB 기록 모두 삭제)",
-      [
-        { text: "취소", style: "cancel" },
-        {
-          text: "삭제",
-          style: "destructive",
-          onPress: async () => {
-            setBusy(true);
-            try {
-              // 1) 대표 + 추가 사진 path 모으기
-              const { data: rep, error: repErr } = await supabase
-                .from("hazard_reports")
-                .select("id, photo_path")
-                .eq("id", reportId)
-                .single();
+    Alert.alert("삭제 확인", "이 제보를 완전히 삭제할까요?\n(사진 파일 + DB 기록 모두 삭제)", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "삭제",
+        style: "destructive",
+        onPress: async () => {
+          setBusy(true);
+          try {
+            const { data: rep, error: repErr } = await supabase
+              .from("hazard_reports")
+              .select("id, photo_path")
+              .eq("id", reportId)
+              .single();
 
-              if (repErr) throw repErr;
+            if (repErr) throw repErr;
 
-              const paths = new Set<string>();
-              if (rep?.photo_path) paths.add(String(rep.photo_path));
+            const paths = new Set<string>();
+            if (rep?.photo_path) paths.add(String(rep.photo_path));
 
-              // 추가 사진 테이블에서 경로 조회(없으면 그냥 스킵)
-              const { data: exPhotos, error: exErr } = await supabase
-                .from("hazard_report_photos")
-                .select("photo_path")
-                .eq("report_id", reportId);
+            const { data: exPhotos, error: exErr } = await supabase
+              .from("hazard_report_photos")
+              .select("photo_path")
+              .eq("report_id", reportId);
 
-              if (!exErr && exPhotos?.length) {
-                for (const r of exPhotos as any[]) {
-                  const p = String(r?.photo_path ?? "");
-                  if (p) paths.add(p);
-                }
+            if (!exErr && exPhotos?.length) {
+              for (const row of exPhotos as any[]) {
+                const path = String(row?.photo_path ?? "");
+                if (path) paths.add(path);
               }
-
-              // 2) Storage 삭제
-              const arr = Array.from(paths).filter(Boolean);
-              if (arr.length > 0) {
-                const { error: rmErr } = await supabase.storage.from("hazard-reports").remove(arr);
-                if (rmErr) throw rmErr;
-              }
-
-              // 3) DB 삭제 (photos는 FK cascade면 자동 삭제)
-              const { error: delErr } = await supabase.from("hazard_reports").delete().eq("id", reportId);
-              if (delErr) throw delErr;
-
-              Alert.alert("완료", "삭제 완료");
-              setPreviewOpen(false);
-              setPreviewReportId("");
-              await fetchReports();
-            } catch (e: any) {
-              Alert.alert("삭제 실패", e?.message ?? String(e));
-            } finally {
-              setBusy(false);
             }
-          },
+
+            const resolution = resolutionMap[reportId];
+            if (resolution?.after_path) paths.add(String(resolution.after_path));
+
+            const removeTargets = Array.from(paths).filter(Boolean);
+            if (removeTargets.length > 0) {
+              const { error: rmErr } = await supabase.storage.from("hazard-reports").remove(removeTargets);
+              if (rmErr) throw rmErr;
+            }
+
+            const { error: delErr } = await supabase.from("hazard_reports").delete().eq("id", reportId);
+            if (delErr) throw delErr;
+
+            Alert.alert("완료", "삭제 완료");
+            setPreviewOpen(false);
+            setPreviewReportId("");
+            await fetchReports();
+          } catch (e: any) {
+            Alert.alert("삭제 실패", e?.message ?? String(e));
+          } finally {
+            setBusy(false);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const emptyText = useMemo(() => {
     if (loading) return "";
-    return isAdmin ? "제보 내역이 없습니다." : "내 제보 내역이 없습니다.";
-  }, [loading, isAdmin]);
+    if (filter === "all") return isAdmin ? "제보 내역이 없습니다." : "내 제보 내역이 없습니다.";
+    if (filter === "open") return "미처리 제보가 없습니다.";
+    if (filter === "pending") return "처리대기 제보가 없습니다.";
+    return "처리완료 제보가 없습니다.";
+  }, [filter, isAdmin, loading]);
+
+  const previewStatus = getHazardStatus(previewResolution);
+
+  const filterButton = (key: StatusFilter, label: string, count?: number) => {
+    const active = filter === key;
+    return (
+      <Pressable
+        key={key}
+        onPress={() => setFilter(key)}
+        style={{
+          flex: key === "all" ? 0 : 1,
+          minWidth: key === "all" ? 74 : 0,
+          height: 40,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: active ? "#111827" : "#E5E7EB",
+          backgroundColor: active ? "#111827" : "#FFFFFF",
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: 10,
+        }}
+      >
+        <Text style={{ color: active ? "#FFFFFF" : "#374151", fontWeight: "900", fontSize: 13 }}>
+          {label}
+          {typeof count === "number" ? ` ${count}` : ""}
+        </Text>
+      </Pressable>
+    );
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-      {/* 헤더 */}
       <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Pressable
@@ -330,21 +449,23 @@ export default function HazardReportsScreen() {
               backgroundColor: "#F9FAFB",
             }}
           >
-            <Text style={{ fontWeight: "900", color: "#111827" }}>←</Text>
+            <Text style={{ fontWeight: "900", color: "#111827" }}>뒤로</Text>
           </Pressable>
 
-          <Image
-            source={require("../../assets/hanexpress-logo.png")}
-            style={{ width: 160, height: 40, resizeMode: "contain" }}
-          />
+          <Image source={require("../../assets/hanexpress-logo.png")} style={{ width: 160, height: 40, resizeMode: "contain" }} />
         </View>
 
-        <Text style={{ marginTop: 8, fontSize: 20, fontWeight: "900", color: "#111827" }}>
-          위험요인 제보 내역
-        </Text>
+        <Text style={{ marginTop: 8, fontSize: 20, fontWeight: "900", color: "#111827" }}>위험요인 제보 내역</Text>
         <Text style={{ marginTop: 4, color: "#6B7280" }}>
-          {isAdmin ? "관리자는 전체 제보를 볼 수 있습니다." : "내가 제보한 내용만 표시됩니다."}
+          {isAdmin ? "관리자는 전체 제보를 볼 수 있습니다." : "내가 제보한 내역만 표시됩니다."}
         </Text>
+
+        <View style={{ marginTop: 12, flexDirection: "row", gap: 8 }}>
+          {filterButton("all", "전체")}
+          {filterButton("open", "미처리", statusCounts.open)}
+          {filterButton("pending", "처리대기", statusCounts.pending)}
+          {filterButton("done", "처리완료", statusCounts.done)}
+        </View>
 
         <Pressable
           onPress={fetchReports}
@@ -359,28 +480,27 @@ export default function HazardReportsScreen() {
             opacity: loading || busy ? 0.6 : 1,
           }}
         >
-          <Text style={{ color: "#fff", fontWeight: "900" }}>
-            {loading ? "새로고침 중..." : "새로고침"}
-          </Text>
+          <Text style={{ color: "#fff", fontWeight: "900" }}>{loading ? "새로고침 중..." : "새로고침"}</Text>
         </Pressable>
 
-        {loading && <ActivityIndicator style={{ marginTop: 8 }} />}
+        {loading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
       </View>
 
-      {/* 리스트 */}
       <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: 12 }}>
         <View style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, overflow: "hidden", flex: 1 }}>
           <FlatList
-            data={reports}
-            keyExtractor={(r) => r.id}
+            data={visibleReports}
+            keyExtractor={(item) => item.id}
             ListEmptyComponent={
               <View style={{ padding: 14 }}>
                 <Text style={{ color: "#6B7280" }}>{emptyText}</Text>
               </View>
             }
             renderItem={({ item }) => {
-              const extraCount = (photoMap[item.id]?.length ?? 0);
+              const extraCount = photoMap[item.id]?.length ?? 0;
               const totalCount = 1 + extraCount;
+              const resolution = resolutionMap[item.id] ?? null;
+              const status = getHazardStatus(resolution);
 
               return (
                 <Pressable
@@ -397,49 +517,125 @@ export default function HazardReportsScreen() {
                     opacity: busy ? 0.7 : 1,
                   }}
                 >
-                  <Image
-                    source={{ uri: item.photo_url }}
-                    style={{ width: 56, height: 56, borderRadius: 12, backgroundColor: "#F3F4F6" }}
-                  />
+                  <Image source={{ uri: item.photo_url }} style={{ width: 56, height: 56, borderRadius: 12, backgroundColor: "#F3F4F6" }} />
 
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={{ fontWeight: "900", fontSize: 15, color: "#111827" }}>
-                      {formatKST(item.created_at)} • 사진 {totalCount}장
-                    </Text>
+                  <View style={{ flex: 1, gap: 5 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <Text style={{ fontWeight: "900", fontSize: 15, color: "#111827" }}>{formatKST(item.created_at)} / 사진 {totalCount}장</Text>
+                      <View
+                        style={{
+                          paddingHorizontal: 10,
+                          height: 24,
+                          borderRadius: 999,
+                          backgroundColor: status.bg,
+                          borderWidth: 1,
+                          borderColor: status.border,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Text style={{ color: status.text, fontWeight: "900", fontSize: 12 }}>{status.label}</Text>
+                      </View>
+                    </View>
                     <Text style={{ color: "#6B7280" }} numberOfLines={2}>
                       {item.comment ?? "(코멘트 없음)"}
                     </Text>
+                    {status.key === "pending" && resolution?.planned_due_date ? (
+                      <Text style={{ color: "#C2410C", fontWeight: "800", fontSize: 12 }}>예정일: {resolution.planned_due_date}</Text>
+                    ) : null}
+                    {status.key === "done" ? (
+                      <Text style={{ color: "#15803D", fontWeight: "800", fontSize: 12 }}>개선일: {formatKST(resolution?.improved_at)}</Text>
+                    ) : null}
                   </View>
 
-                  <Text style={{ fontWeight: "900", color: "#111827" }}>보기</Text>
+                  <Text style={{ fontWeight: "900", color: "#111827" }}>상세</Text>
                 </Pressable>
               );
             }}
           />
         </View>
 
-        <Text style={{ color: "#9CA3AF", marginTop: 8 }}>
-          항목을 누르면 상세(사진/코멘트) 확인 및 삭제가 가능합니다.
-        </Text>
+        <Text style={{ color: "#9CA3AF", marginTop: 8 }}>항목을 누르면 제보 사진과 처리 상태를 자세히 확인할 수 있습니다.</Text>
       </View>
 
-      {/* 상세/미리보기 모달 */}
       <Modal visible={previewOpen} animationType="slide" onRequestClose={() => setPreviewOpen(false)} presentationStyle="fullScreen">
         <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-          <View style={{ padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ fontSize: 16, fontWeight: "900", flex: 1, color: "#111827" }} numberOfLines={2}>
-              {previewTitle}
-            </Text>
+          <View style={{ padding: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <View style={{ flex: 1, gap: 6 }}>
+              <Text style={{ fontSize: 16, fontWeight: "900", color: "#111827" }} numberOfLines={2}>
+                {previewTitle}
+              </Text>
+              <View
+                style={{
+                  alignSelf: "flex-start",
+                  paddingHorizontal: 10,
+                  height: 24,
+                  borderRadius: 999,
+                  backgroundColor: previewStatus.bg,
+                  borderWidth: 1,
+                  borderColor: previewStatus.border,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text style={{ color: previewStatus.text, fontWeight: "900", fontSize: 12 }}>{previewStatus.label}</Text>
+              </View>
+            </View>
             <Pressable onPress={() => setPreviewOpen(false)} style={{ padding: 10 }}>
               <Text style={{ fontWeight: "900", color: "#2563EB" }}>닫기</Text>
             </Pressable>
           </View>
 
-          <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-            <Text style={{ fontWeight: "900", color: "#111827" }}>코멘트</Text>
-            <Text style={{ color: "#6B7280", marginTop: 6 }}>{previewComment || "(없음)"}</Text>
+          <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24, gap: 14 }}>
+            <View style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, backgroundColor: "#FFFFFF", padding: 14 }}>
+              <Text style={{ fontWeight: "900", color: "#111827" }}>제보 코멘트</Text>
+              <Text style={{ color: "#6B7280", marginTop: 6 }}>{previewComment || "(없음)"}</Text>
+            </View>
 
-            <View style={{ height: 14 }} />
+            <View style={{ gap: 10 }}>
+              <Text style={{ fontWeight: "900", color: "#111827", fontSize: 15 }}>제보 사진</Text>
+              {previewPhotos.length === 0 ? (
+                <View style={{ padding: 16 }}>
+                  <Text style={{ color: "#6B7280" }}>사진이 없습니다.</Text>
+                </View>
+              ) : (
+                previewPhotos.map((item) => (
+                  <View key={item.path} style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, padding: 12, backgroundColor: "#FFFFFF" }}>
+                    <Image source={{ uri: item.url }} style={{ width: "100%", height: 320, borderRadius: 14, backgroundColor: "#F3F4F6" }} resizeMode="contain" />
+                    <View style={{ height: 8 }} />
+                    <Text style={{ color: "#9CA3AF", fontSize: 12 }} numberOfLines={1}>
+                      {item.path}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </View>
+
+            {previewStatus.key === "pending" && previewResolution?.planned_due_date ? (
+              <View style={{ borderWidth: 1, borderColor: "#FDBA74", borderRadius: 16, backgroundColor: "#FFF7ED", padding: 14 }}>
+                <Text style={{ fontWeight: "900", color: "#9A3412" }}>처리대기 정보</Text>
+                <Text style={{ color: "#C2410C", marginTop: 6 }}>예정일: {previewResolution.planned_due_date}</Text>
+              </View>
+            ) : null}
+
+            {previewStatus.key === "done" ? (
+              <View style={{ gap: 10 }}>
+                <Text style={{ fontWeight: "900", color: "#111827", fontSize: 15 }}>개선 완료 정보</Text>
+
+                {previewResolution?.after_public_url ? (
+                  <View style={{ borderWidth: 1, borderColor: "#BBF7D0", borderRadius: 16, padding: 12, backgroundColor: "#FFFFFF" }}>
+                    <Image
+                      source={{ uri: previewResolution.after_public_url }}
+                      style={{ width: "100%", height: 320, borderRadius: 14, backgroundColor: "#F3F4F6" }}
+                      resizeMode="contain"
+                    />
+                    <View style={{ height: 10 }} />
+                    <Text style={{ color: "#15803D", fontWeight: "800" }}>개선일: {formatKST(previewResolution.improved_at)}</Text>
+                    <Text style={{ color: "#374151", marginTop: 6 }}>{previewResolution.after_memo || "(개선 설명 없음)"}</Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
 
             <Pressable
               onPress={() => deleteReport(previewReportId)}
@@ -455,35 +651,9 @@ export default function HazardReportsScreen() {
                 opacity: busy || !previewReportId ? 0.4 : 1,
               }}
             >
-              <Text style={{ fontWeight: "900", color: "#EF4444" }}>
-                {busy ? "삭제 중..." : "이 제보 삭제(사진 포함)"}
-              </Text>
+              <Text style={{ fontWeight: "900", color: "#EF4444" }}>{busy ? "삭제 중..." : "이 제보 삭제(사진 포함)"}</Text>
             </Pressable>
-          </View>
-
-          <FlatList
-            data={previewPhotos}
-            keyExtractor={(x) => x.path}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24, gap: 12 }}
-            renderItem={({ item }) => (
-              <View style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, padding: 12, backgroundColor: "#FFFFFF" }}>
-                <Image
-                  source={{ uri: item.url }}
-                  style={{ width: "100%", height: 320, borderRadius: 14, backgroundColor: "#F3F4F6" }}
-                  resizeMode="contain"
-                />
-                <View style={{ height: 8 }} />
-                <Text style={{ color: "#9CA3AF", fontSize: 12 }} numberOfLines={1}>
-                  {item.path}
-                </Text>
-              </View>
-            )}
-            ListEmptyComponent={
-              <View style={{ padding: 16 }}>
-                <Text style={{ color: "#6B7280" }}>사진이 없습니다.</Text>
-              </View>
-            }
-          />
+          </ScrollView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>

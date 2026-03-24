@@ -21,6 +21,7 @@ import {
 } from "react-native";
 import { Calendar } from "react-native-calendars";
 import { supabase } from "../../src/lib/supabase";
+import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
 
 // ✅ 반드시 legacy로! (expo-file-system import 금지)
 import * as FileSystem from "expo-file-system/legacy";
@@ -280,10 +281,21 @@ export default function PhotoListScreen() {
 
     const wp = String(data?.work_part ?? "").trim();
     const driver = wp.includes("기사");
+    let displayWp = wp;
+
+    if (wp === "임시직") {
+      const todayWp = await getTodayTempWorkPart(session.user.id);
+      if (!todayWp) {
+        Alert.alert("출근 필요", "임시직은 출근 확인에서 오늘 근무파트를 선택한 뒤 조회를 사용할 수 있습니다.");
+        router.replace("/(tabs)");
+        return;
+      }
+      displayWp = todayWp;
+    }
 
     setIsAdmin(!!data?.is_admin);
     setAdminSeeAll(false);
-    setMyWorkPart(wp);
+    setMyWorkPart(displayWp);
     setIsDriver(driver);
 
     // ✅ 기사면 이 조회 화면에서는 “내것만 + 기사 3종만” 컨셉 강제

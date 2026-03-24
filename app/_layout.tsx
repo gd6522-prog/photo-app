@@ -21,9 +21,16 @@ function AuthGate() {
 
   const lastRedirectRef = useRef<string | null>(null);
   const redirectLockRef = useRef(false);
+  const splashHiddenRef = useRef(false);
 
   const [readyToRender, setReadyToRender] = useState(false);
   const [postSignupRedirect, setPostSignupRedirect] = useState(false);
+
+  const hideSplashOnce = () => {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
+    SplashScreen.hideAsync().catch(() => {});
+  };
 
   useEffect(() => {
     (async () => {
@@ -61,10 +68,8 @@ function AuthGate() {
       if (!readyToRender) {
         setReadyToRender(true);
         requestAnimationFrame(() => {
-          SplashScreen.hideAsync().catch(() => {});
+          hideSplashOnce();
         });
-      } else {
-        SplashScreen.hideAsync().catch(() => {});
       }
       return;
     }
@@ -79,7 +84,7 @@ function AuthGate() {
     requestAnimationFrame(() => {
       setTimeout(() => {
         setReadyToRender(true);
-        SplashScreen.hideAsync().catch(() => {});
+        hideSplashOnce();
       }, 50);
     });
   }, [user?.id, loading, postSignupRedirect, segments?.[0], navState?.key, router, readyToRender]);
