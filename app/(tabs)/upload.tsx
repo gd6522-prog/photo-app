@@ -21,7 +21,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../src/lib/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
+import { fetchInspectionStores, fetchStoresByCarNo, searchStores as searchStoreMap } from "../../src/lib/storeMap";
 import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
 import { getWorkPartOptionsExceptDriver, Option } from "../../src/lib/workParts";
 
@@ -77,6 +78,41 @@ function guessContentType(uri: string) {
   if (ext === "png") return "image/png";
   if (ext === "webp") return "image/webp";
   return "image/jpeg";
+}
+
+function looksLikePolicyError(error: unknown) {
+  const msg = String((error as any)?.message ?? "").toLowerCase();
+  return msg.includes("row-level security") || msg.includes("permission denied") || msg.includes("violates row-level security");
+}
+
+async function invokeFunctionJson(functionName: string, accessToken: string, body: Record<string, unknown>) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await res.text();
+  let payload: any = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text || null;
+  }
+
+  if (!res.ok) {
+    const detail =
+      typeof payload === "string"
+        ? payload
+        : String(payload?.error ?? payload?.message ?? `HTTP ${res.status}`);
+    throw new Error(detail);
+  }
+
+  return payload;
 }
 
 function makeSafeFileName() {
@@ -459,11 +495,10 @@ export default function UploadScreen() {
 
     setDriverLoading(true);
     try {
-      const { data, error } = await supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("car_no", carNo).limit(5000);
+      const { rows, error } = await fetchStoresByCarNo(carNo, 5000);
       if (error) throw error;
 
-      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
-      setDriverStores(rows);
+      setDriverStores(rows.slice().sort(sortStores));
     } catch (e: any) {
       Alert.alert("호차 점포 로딩 오류", e?.message ?? String(e));
       setDriverStores([]);
@@ -483,18 +518,10 @@ export default function UploadScreen() {
 
     setSupportBusy(true);
     try {
-      const like = `%${q}%`;
-      const { data, error } = await supabase
-        .from("store_map")
-        .select("store_code, store_name, car_no, seq_no")
-        .or(`store_code.ilike.${like},store_name.ilike.${like}`)
-        .order("car_no", { ascending: true, nullsFirst: false })
-        .order("seq_no", { ascending: true, nullsFirst: false })
-        .limit(200);
+      const { rows, error } = await searchStoreMap(q, 200);
 
       if (error) throw error;
 
-      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
       setSupportResults(rows);
       if (rows.length === 0) Alert.alert("결과 없음", "검색 결과가 없습니다.");
     } catch (e: any) {
@@ -512,14 +539,14 @@ export default function UploadScreen() {
     setInspectStores([]);
     try {
       const [storeResult, orderStoreCodes] = await Promise.all([
-        supabase.from("store_map").select("store_code, store_name, car_no, seq_no").eq("is_inspection", true).limit(5000),
+        fetchInspectionStores(5000),
         loadInspectionOrderStoreCodes(),
       ]);
 
-      const { data, error } = storeResult;
+      const { rows: inspectionRows, error } = storeResult;
       if (error) throw error;
 
-      let rows = ((data ?? []) as StoreMapRow[]).slice();
+      let rows = inspectionRows.slice();
       rows = rows.filter((row) => orderStoreCodes.has(normalizeStoreCode(row.store_code)));
 
       rows.sort(sortStores);
@@ -546,18 +573,10 @@ export default function UploadScreen() {
 
     setBusy(true);
     try {
-      const like = `%${q}%`;
-      const { data, error } = await supabase
-        .from("store_map")
-        .select("store_code, store_name, car_no, seq_no")
-        .or(`store_code.ilike.${like},store_name.ilike.${like}`)
-        .order("car_no", { ascending: true, nullsFirst: false })
-        .order("seq_no", { ascending: true, nullsFirst: false })
-        .limit(200);
+      const { rows, error } = await searchStoreMap(q, 200);
 
       if (error) throw error;
 
-      const rows = ((data ?? []) as StoreMapRow[]).slice().sort(sortStores);
       setStoreResults(rows);
       if (rows.length === 0) Alert.alert("결과 없음", "검색 결과가 없습니다.");
 
@@ -644,7 +663,17 @@ export default function UploadScreen() {
   };
 
   // ✅ 현장(photos) insert robust
-  const insertPhotoRowRobust = async (payload: any, minimalPayload: any) => {
+  const insertPhotoRowViaFunction = async (payload: any, minimalPayload: any, accessToken: string) => {
+    const response = await invokeFunctionJson("save-upload-photo-record", accessToken, {
+        table: "photos",
+        access_token: accessToken,
+        payload,
+        minimal_payload: minimalPayload,
+    });
+    if (!response?.ok) throw new Error(response?.error || "photos 저장에 실패했습니다.");
+  };
+
+  const insertPhotoRowRobust = async (payload: any, minimalPayload: any, accessToken: string) => {
     const { error } = await supabase.from("photos").insert(payload);
     if (!error) return;
 
@@ -655,14 +684,33 @@ export default function UploadScreen() {
     if (looksLikeMissingColumn) {
       const { error: e2 } = await supabase.from("photos").insert(minimalPayload);
       if (!e2) return;
+      if (looksLikePolicyError(e2)) {
+        await insertPhotoRowViaFunction(payload, minimalPayload, accessToken);
+        return;
+      }
       throw e2;
+    }
+
+    if (looksLikePolicyError(error)) {
+      await insertPhotoRowViaFunction(payload, minimalPayload, accessToken);
+      return;
     }
 
     throw error;
   };
 
   // ✅ 기사(배송) delivery_photos insert robust
-  const insertDeliveryPhotoRowRobust = async (payload: any, minimalPayload: any) => {
+  const insertDeliveryPhotoRowViaFunction = async (payload: any, minimalPayload: any, accessToken: string) => {
+    const response = await invokeFunctionJson("save-upload-photo-record", accessToken, {
+        table: "delivery_photos",
+        access_token: accessToken,
+        payload,
+        minimal_payload: minimalPayload,
+    });
+    if (!response?.ok) throw new Error(response?.error || "delivery_photos 저장에 실패했습니다.");
+  };
+
+  const insertDeliveryPhotoRowRobust = async (payload: any, minimalPayload: any, accessToken: string) => {
     const { error } = await supabase.from("delivery_photos").insert(payload);
     if (!error) return;
 
@@ -673,7 +721,16 @@ export default function UploadScreen() {
     if (looksLikeMissingColumn) {
       const { error: e2 } = await supabase.from("delivery_photos").insert(minimalPayload);
       if (!e2) return;
+      if (looksLikePolicyError(e2)) {
+        await insertDeliveryPhotoRowViaFunction(payload, minimalPayload, accessToken);
+        return;
+      }
       throw e2;
+    }
+
+    if (looksLikePolicyError(error)) {
+      await insertDeliveryPhotoRowViaFunction(payload, minimalPayload, accessToken);
+      return;
     }
 
     throw error;
@@ -731,7 +788,7 @@ export default function UploadScreen() {
           created_by: session.user.id,
         };
 
-        await insertDeliveryPhotoRowRobust(payload, minimal);
+        await insertDeliveryPhotoRowRobust(payload, minimal, session.access_token);
       };
 
       if (assets.length === 0 && allowMetaOnlyUpload) {
@@ -794,7 +851,7 @@ export default function UploadScreen() {
               work_part: wp || null,
             };
 
-            await insertPhotoRowRobust(payload, minimal);
+            await insertPhotoRowRobust(payload, minimal, session.access_token);
           }
 
           ok++;
