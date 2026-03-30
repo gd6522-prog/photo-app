@@ -1,6 +1,7 @@
 ﻿import { Ionicons } from "@expo/vector-icons";
 import { Buffer } from "buffer";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
@@ -64,13 +65,31 @@ function kstDayRangeUtcIso(dayYYYYMMDD: string) {
   return { startIso: startKst.toISOString(), endIso: endKst.toISOString() };
 }
 
-async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
-  const base64 = await FileSystem.readAsStringAsync(uri, {
+async function uriToArrayBuffer(uri: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+  const ext = uri.split(".").pop()?.toLowerCase() ?? "";
+  const isHeic = ext === "heic" || ext === "heif";
+
+  let finalUri = uri;
+  let contentType = "image/jpeg";
+
+  if (isHeic) {
+    const result = await ImageManipulator.manipulateAsync(uri, [], {
+      compress: 0.9,
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+    finalUri = result.uri;
+  } else if (ext === "png") {
+    contentType = "image/png";
+  } else if (ext === "webp") {
+    contentType = "image/webp";
+  }
+
+  const base64 = await FileSystem.readAsStringAsync(finalUri, {
     encoding: FileSystem.EncodingType.Base64,
   });
   const buf = Buffer.from(base64, "base64");
   const u8 = new Uint8Array(buf);
-  return u8.buffer;
+  return { buffer: u8.buffer, contentType };
 }
 
 function guessContentType(uri: string) {
@@ -808,11 +827,10 @@ export default function UploadScreen() {
         if (!uri) continue;
 
         try {
-          const contentType = guessContentType(uri);
           const fileName = makeSafeFileName();
 
           const path = `${cat}/${selectedStore.store_code}/${day}/${fileName}`;
-          const ab = await uriToArrayBuffer(uri);
+          const { buffer: ab, contentType } = await uriToArrayBuffer(uri);
 
           const targetBucket = isDriver ? "delivery_photos" : "photos";
 

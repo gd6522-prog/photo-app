@@ -3,6 +3,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { Buffer } from "buffer";
 import * as Device from "expo-device";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
@@ -105,13 +106,31 @@ function formatKstDateLabel(ymd: string) {
   return `${y}.${String(m).padStart(2, "0")}.${String(d).padStart(2, "0")}(${wd})`;
 }
 
-async function uriToArrayBuffer(uri: string): Promise<ArrayBuffer> {
-  const base64 = await FileSystem.readAsStringAsync(uri, {
+async function uriToArrayBuffer(uri: string): Promise<{ buffer: ArrayBuffer; contentType: string }> {
+  const ext = uri.split(".").pop()?.toLowerCase() ?? "";
+  const isHeic = ext === "heic" || ext === "heif";
+
+  let finalUri = uri;
+  let contentType = "image/jpeg";
+
+  if (isHeic) {
+    const result = await ImageManipulator.manipulateAsync(uri, [], {
+      compress: 0.9,
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+    finalUri = result.uri;
+  } else if (ext === "png") {
+    contentType = "image/png";
+  } else if (ext === "webp") {
+    contentType = "image/webp";
+  }
+
+  const base64 = await FileSystem.readAsStringAsync(finalUri, {
     encoding: FileSystem.EncodingType.Base64,
   });
   const buf = Buffer.from(base64, "base64");
   const u8 = new Uint8Array(buf);
-  return u8.buffer;
+  return { buffer: u8.buffer, contentType };
 }
 
 function guessContentType(uri: string) {
@@ -724,8 +743,7 @@ export default function MainMenu() {
       const firstName = makeSafeFileName();
       const firstPath = `${day}/${userId}/${firstName}`;
 
-      const firstAb = await uriToArrayBuffer(firstUri);
-      const firstType = guessContentType(firstUri);
+      const { buffer: firstAb, contentType: firstType } = await uriToArrayBuffer(firstUri);
 
       const up1Res = await withTimeout(
         supabase.storage.from("hazard-reports").upload(firstPath, firstAb, {
@@ -767,8 +785,7 @@ export default function MainMenu() {
         for (const uri of reportPhotos.slice(1)) {
           const name = makeSafeFileName();
           const path = `${day}/${userId}/${name}`;
-          const ab = await uriToArrayBuffer(uri);
-          const contentType = guessContentType(uri);
+          const { buffer: ab, contentType } = await uriToArrayBuffer(uri);
 
           const upRes = await withTimeout(
             supabase.storage.from("hazard-reports").upload(path, ab, {
