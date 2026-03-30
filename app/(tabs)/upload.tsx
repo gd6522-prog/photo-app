@@ -157,8 +157,8 @@ function normalizeStoreCode(input: string | null | undefined) {
   return digits.length >= 5 ? digits.slice(0, 5) : digits.padStart(5, "0");
 }
 
-async function loadInspectionOrderStoreCodes() {
-  const invokeRes = await supabase.functions.invoke("list-inspection-order-stores", { body: {} });
+async function loadInspectionOrderStoreCodes(workPart?: string) {
+  const invokeRes = await supabase.functions.invoke("list-inspection-order-stores", { body: { work_part: workPart ?? "" } });
   const payload = invokeRes.data as { ok?: boolean; store_codes?: string[]; error?: string } | null;
   if (invokeRes.error) throw invokeRes.error;
   if (!payload?.ok) throw new Error(payload?.error || "검수 점포 기준 조회에 실패했습니다.");
@@ -557,9 +557,10 @@ export default function UploadScreen() {
     setInspectLoading(true);
     setInspectStores([]);
     try {
+      const wp = (myWorkPart ?? "").trim();
       const [storeResult, orderStoreCodes] = await Promise.all([
         fetchInspectionStores(5000),
-        loadInspectionOrderStoreCodes(),
+        loadInspectionOrderStoreCodes(wp || undefined),
       ]);
 
       const { rows: inspectionRows, error } = storeResult;
@@ -571,7 +572,6 @@ export default function UploadScreen() {
       rows.sort(sortStores);
       setInspectStores(rows);
 
-      const wp = (myWorkPart ?? "").trim();
       if (wp) await loadDoneStoresForToday(wp);
     } catch (e: any) {
       Alert.alert("검수 점포 로딩 오류", e?.message ?? String(e));

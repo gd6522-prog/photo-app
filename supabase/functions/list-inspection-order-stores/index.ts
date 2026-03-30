@@ -30,11 +30,31 @@ function normalizeStoreCode(input: string | null | undefined) {
 
 type VehicleSnapshotCargoRow = {
   store_code?: string | null;
+  large_box?: number | null;
+  large_inner?: number | null;
+  large_other?: number | null;
+  small_low?: number | null;
+  small_high?: number | null;
+  tobacco?: number | null;
 };
 
 type VehicleSnapshot = {
   cargoRows?: VehicleSnapshotCargoRow[] | null;
 };
+
+// work_part → cargoRow에서 발주량을 확인할 필드 목록
+const WORK_PART_FIELDS: Record<string, (keyof VehicleSnapshotCargoRow)[]> = {
+  "박스존": ["large_box"],
+  "이너존": ["large_inner"],
+  "이형존": ["large_other"],
+  "경량존": ["small_low"],
+  "슬라존": ["small_high"],
+  "담배존": ["tobacco"],
+};
+
+function hasOrderForPart(row: VehicleSnapshotCargoRow, fields: (keyof VehicleSnapshotCargoRow)[]): boolean {
+  return fields.some((f) => ((row[f] as number | null) ?? 0) > 0);
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflight();
@@ -46,6 +66,10 @@ Deno.serve(async (req) => {
     if (!SUPABASE_URL || !SERVICE_ROLE) {
       return json(500, { error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" });
     }
+
+    const body = await req.json().catch(() => ({})) as { work_part?: string };
+    const workPart = (body?.work_part ?? "").trim();
+    const partFields = WORK_PART_FIELDS[workPart] ?? null;
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -62,9 +86,15 @@ Deno.serve(async (req) => {
 
     const raw = await data.text();
     const parsed = JSON.parse(raw) as VehicleSnapshot;
+    const allRows = parsed.cargoRows ?? [];
+
+    const filteredRows = partFields
+      ? allRows.filter((row) => hasOrderForPart(row, partFields))
+      : allRows;
+
     const storeCodes = Array.from(
       new Set(
-        (parsed.cargoRows ?? [])
+        filteredRows
           .map((row) => normalizeStoreCode(row?.store_code))
           .filter(Boolean)
       )
