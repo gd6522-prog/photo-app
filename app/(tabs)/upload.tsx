@@ -832,20 +832,37 @@ export default function UploadScreen() {
           const path = `${cat}/${selectedStore.store_code}/${day}/${fileName}`;
           const { buffer: ab, contentType } = await uriToArrayBuffer(uri);
 
-          const targetBucket = isDriver ? "delivery_photos" : "photos";
-
-          const { error: upErr } = await supabase.storage.from(targetBucket).upload(path, ab, {
-            contentType,
-            upsert: false,
-          });
-          if (upErr) throw upErr;
-
-          const { data: pub } = supabase.storage.from(targetBucket).getPublicUrl(path);
-          const publicUrl = pub.publicUrl;
-
           if (isDriver) {
-            await saveDriverRow(path, publicUrl, targetBucket);
+            // R2 업로드
+            const ADMIN_URL = "https://han-admin-gd6522-7169s-projects.vercel.app";
+            const r2Res = await fetch(`${ADMIN_URL}/api/r2/upload-url`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({ bucket: "delivery_photos", path, contentType }),
+            });
+            const r2Data = await r2Res.json();
+            if (!r2Res.ok || !r2Data.ok) throw new Error(r2Data.message ?? `R2 URL 발급 실패 (${r2Res.status})`);
+
+            const upRes = await fetch(r2Data.uploadUrl, {
+              method: "PUT",
+              headers: { "Content-Type": contentType },
+              body: ab,
+            });
+            if (!upRes.ok) throw new Error(`R2 업로드 실패 (${upRes.status})`);
+
+            await saveDriverRow(path, r2Data.publicUrl, "delivery_photos");
           } else {
+            const { error: upErr } = await supabase.storage.from("photos").upload(path, ab, {
+              contentType,
+              upsert: false,
+            });
+            if (upErr) throw upErr;
+
+            const { data: pub } = supabase.storage.from("photos").getPublicUrl(path);
+            const publicUrl = pub.publicUrl;
             const payload: any = {
               user_id: session.user.id,
               store_code: selectedStore.store_code,
