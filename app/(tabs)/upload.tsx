@@ -138,6 +138,40 @@ function makeSafeFileName() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}.jpg`;
 }
 
+const WEB_API_URL = "https://han-admin.vercel.app";
+
+async function uploadToR2(params: {
+  buffer: ArrayBuffer;
+  contentType: string;
+  path: string;
+  bucket: string;
+  accessToken: string;
+}): Promise<{ publicUrl: string; key: string }> {
+  const res = await fetch(`${WEB_API_URL}/api/r2/upload-url`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    body: JSON.stringify({ bucket: params.bucket, path: params.path, contentType: params.contentType }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.message ?? `R2 URL 발급 실패 (${res.status})`);
+
+  const { uploadUrl, publicUrl, key } = data;
+
+  const upRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": params.contentType },
+    body: params.buffer,
+  });
+
+  if (!upRes.ok) throw new Error(`R2 업로드 실패 (${upRes.status})`);
+
+  return { publicUrl, key };
+}
+
 function sortStores(a: StoreMapRow, b: StoreMapRow) {
   const BIG = 999999;
   const carA = a.car_no ?? BIG;
@@ -834,14 +868,13 @@ export default function UploadScreen() {
 
           const targetBucket = isDriver ? "delivery_photos" : "photos";
 
-          const { error: upErr } = await supabase.storage.from(targetBucket).upload(path, ab, {
+          const { publicUrl } = await uploadToR2({
+            buffer: ab,
             contentType,
-            upsert: false,
+            path,
+            bucket: targetBucket,
+            accessToken: session.access_token,
           });
-          if (upErr) throw upErr;
-
-          const { data: pub } = supabase.storage.from(targetBucket).getPublicUrl(path);
-          const publicUrl = pub.publicUrl;
 
           if (isDriver) {
             await saveDriverRow(path, publicUrl, targetBucket);

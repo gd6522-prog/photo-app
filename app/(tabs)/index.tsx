@@ -144,6 +144,40 @@ function makeSafeFileName() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}.jpg`;
 }
 
+const WEB_API_URL = "https://han-admin.vercel.app";
+
+async function uploadToR2(params: {
+  buffer: ArrayBuffer;
+  contentType: string;
+  path: string;
+  bucket: string;
+  accessToken: string;
+}): Promise<{ publicUrl: string; key: string }> {
+  const res = await fetch(`${WEB_API_URL}/api/r2/upload-url`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    body: JSON.stringify({ bucket: params.bucket, path: params.path, contentType: params.contentType }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.message ?? `R2 URL 발급 실패 (${res.status})`);
+
+  const { uploadUrl, publicUrl, key } = data;
+
+  const upRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": params.contentType },
+    body: params.buffer,
+  });
+
+  if (!upRes.ok) throw new Error(`R2 업로드 실패 (${upRes.status})`);
+
+  return { publicUrl, key };
+}
+
 function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371000;
   const toRad = (v: number) => (v * Math.PI) / 180;
@@ -745,19 +779,12 @@ export default function MainMenu() {
 
       const { buffer: firstAb, contentType: firstType } = await uriToArrayBuffer(firstUri);
 
-      const up1Res = await withTimeout(
-        supabase.storage.from("hazard-reports").upload(firstPath, firstAb, {
-          contentType: firstType,
-          upsert: false,
-        }),
+      const { publicUrl: firstUrl } = await withTimeout(
+        uploadToR2({ buffer: firstAb, contentType: firstType, path: firstPath, bucket: "hazard-reports", accessToken }),
         20000,
         "사진 업로드"
       );
-      if ((up1Res as any).error) throw (up1Res as any).error;
       uploadedPaths.push(firstPath);
-
-      const { data: pub1 } = supabase.storage.from("hazard-reports").getPublicUrl(firstPath);
-      const firstUrl = pub1.publicUrl;
 
       const insRepRes = await withTimeout(
         supabase
@@ -787,22 +814,17 @@ export default function MainMenu() {
           const path = `${day}/${userId}/${name}`;
           const { buffer: ab, contentType } = await uriToArrayBuffer(uri);
 
-          const upRes = await withTimeout(
-            supabase.storage.from("hazard-reports").upload(path, ab, {
-              contentType,
-              upsert: false,
-            }),
+          const { publicUrl: photoUrl } = await withTimeout(
+            uploadToR2({ buffer: ab, contentType, path, bucket: "hazard-reports", accessToken }),
             20000,
             "추가 사진 업로드"
           );
-          if ((upRes as any).error) throw (upRes as any).error;
 
           uploadedPaths.push(path);
-          const { data: pub } = supabase.storage.from("hazard-reports").getPublicUrl(path);
           extraRows.push({
             report_id: reportId,
             photo_path: path,
-            photo_url: pub.publicUrl,
+            photo_url: photoUrl,
           });
         }
 
@@ -852,11 +874,7 @@ export default function MainMenu() {
           await supabase.from("hazard_reports").delete().eq("id", createdReportId);
         } catch {}
       }
-      if (uploadedPaths.length > 0) {
-        try {
-          await supabase.storage.from("hazard-reports").remove(uploadedPaths);
-        } catch {}
-      }
+      // R2 파일 롤백은 서버에서 처리 (클라이언트에서는 생략)
       Alert.alert("제보 실패", e?.message ?? String(e));
     } finally {
       setReportUploading(false);

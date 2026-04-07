@@ -50,6 +50,12 @@
         "projectId": "878edb3c-6410-4b56-a0c3-7be86ac75386"
       }
     },
-    "owner": "gd6522"
+    "owner": "gd6522",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/878edb3c-6410-4b56-a0c3-7be86ac75386"
+    }
   }
 }
