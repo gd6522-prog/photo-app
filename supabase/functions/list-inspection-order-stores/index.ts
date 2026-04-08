@@ -1,5 +1,3 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
 function json(status: number, data: unknown) {
   return new Response(JSON.stringify(data), {
     status,
@@ -61,30 +59,20 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json(405, { error: "Method Not Allowed" });
 
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-    const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    if (!SUPABASE_URL || !SERVICE_ROLE) {
-      return json(500, { error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" });
-    }
-
     const body = await req.json().catch(() => ({})) as { work_part?: string };
     const workPart = (body?.work_part ?? "").trim();
     const partFields = WORK_PART_FIELDS[workPart] ?? null;
 
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    const { data, error } = await admin.storage.from("vehicle-data").download("current/latest.json");
-    if (error) {
-      const message = String(error.message ?? "");
-      if (/not\s*found|404|object not found/i.test(message)) {
+    const R2_PUBLIC_URL = "https://pub-2ed566ac41944f778e208a0ccea9acd5.r2.dev";
+    const r2Res = await fetch(`${R2_PUBLIC_URL}/vehicle-data/current/latest.json`);
+    if (!r2Res.ok) {
+      if (r2Res.status === 404) {
         return json(200, { ok: true, store_codes: [] });
       }
-      throw error;
+      throw new Error(`R2 데이터 조회 실패 (${r2Res.status})`);
     }
 
-    const raw = await data.text();
+    const raw = await r2Res.text();
     const parsed = JSON.parse(raw) as VehicleSnapshot;
     const allRows = parsed.cargoRows ?? [];
 
