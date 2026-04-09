@@ -472,23 +472,29 @@ export default function SignupScreen() {
         throw upErr;
       }
 
-      const { error: profErr } = await supabase
-        .from("profiles")
-        .upsert(
-          {
-            id: userId,
-            phone: e164Fixed,
-            name: name.trim(),
-            work_part: workPart.trim(),
-            birthdate: birthdateDashed,
-            nationality: nationalityFinal,
-            language: lang,
-            phone_verified: true,
-          },
-          { onConflict: "id" }
-        );
+      // 서버 API(service role)로 profiles upsert → RLS 우회
+      const { data: freshSession } = await supabase.auth.getSession();
+      const freshToken = freshSession?.session?.access_token ?? cleanupToken;
 
-      if (profErr) throw profErr;
+      const completeRes = await fetch("https://han-admin.vercel.app/api/signup/complete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${freshToken}`,
+        },
+        body: JSON.stringify({
+          phone: e164Fixed,
+          name: name.trim(),
+          work_part: workPart.trim(),
+          birthdate: birthdateDashed,
+          nationality: nationalityFinal,
+          language: lang,
+        }),
+      });
+      if (!completeRes.ok) {
+        const errData = await completeRes.json().catch(() => ({}));
+        throw new Error(errData?.message ?? "프로필 저장에 실패했습니다.");
+      }
 
       await setLocale(lang);
 
