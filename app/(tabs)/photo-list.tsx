@@ -719,13 +719,6 @@ export default function PhotoListScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.badgeRow}>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText} numberOfLines={1}>
-              {filterBadge}
-            </Text>
-          </View>
-        </View>
       </View>
 
       {/* 컨트롤 */}
