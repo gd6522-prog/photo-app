@@ -11,7 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 
 type ReportRow = {
@@ -113,7 +113,8 @@ function getHazardStatus(resolution: ResolutionRow | null): {
 }
 
 export default function HazardReportsScreen() {
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const topPad = Math.min(Math.max(insets.top, 6), 18) + 4;
 
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -430,35 +431,10 @@ export default function HazardReportsScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
-      <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 8 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Pressable
-            onPress={() => {
-              try {
-                router.back();
-              } catch {
-                router.replace("/(tabs)" as any);
-              }
-            }}
-            style={{
-              paddingVertical: 8,
-              paddingHorizontal: 10,
-              borderRadius: 10,
-              borderWidth: 1,
-              borderColor: "#E5E7EB",
-              backgroundColor: "#F9FAFB",
-            }}
-          >
-            <Text style={{ fontWeight: "900", color: "#111827" }}>뒤로</Text>
-          </Pressable>
-
-          <Image source={require("../../assets/hanexpress-logo.png")} style={{ width: 160, height: 40, resizeMode: "contain" }} />
+      <View style={{ paddingHorizontal: 16, paddingTop: topPad, paddingBottom: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Text style={{ fontSize: 24, fontWeight: "900", color: "#111827", letterSpacing: -0.4 }}>위험요인 제보 내역</Text>
         </View>
-
-        <Text style={{ marginTop: 8, fontSize: 20, fontWeight: "900", color: "#111827" }}>위험요인 제보 내역</Text>
-        <Text style={{ marginTop: 4, color: "#6B7280" }}>
-          {isAdmin ? "관리자는 전체 제보를 볼 수 있습니다." : "내가 제보한 내역만 표시됩니다."}
-        </Text>
 
         <View style={{ marginTop: 12, flexDirection: "row", gap: 8 }}>
           {filterButton("all", "전체")}
@@ -520,23 +496,7 @@ export default function HazardReportsScreen() {
                   <Image source={{ uri: item.photo_url }} style={{ width: 56, height: 56, borderRadius: 12, backgroundColor: "#F3F4F6" }} />
 
                   <View style={{ flex: 1, gap: 5 }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <Text style={{ fontWeight: "900", fontSize: 15, color: "#111827" }}>{formatKST(item.created_at)} / 사진 {totalCount}장</Text>
-                      <View
-                        style={{
-                          paddingHorizontal: 10,
-                          height: 24,
-                          borderRadius: 999,
-                          backgroundColor: status.bg,
-                          borderWidth: 1,
-                          borderColor: status.border,
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >
-                        <Text style={{ color: status.text, fontWeight: "900", fontSize: 12 }}>{status.label}</Text>
-                      </View>
-                    </View>
+                    <Text style={{ fontWeight: "900", fontSize: 14, color: "#111827" }}>{formatKST(item.created_at)} / 사진 {totalCount}장</Text>
                     <Text style={{ color: "#6B7280" }} numberOfLines={2}>
                       {item.comment ?? "(코멘트 없음)"}
                     </Text>
@@ -548,7 +508,20 @@ export default function HazardReportsScreen() {
                     ) : null}
                   </View>
 
-                  <Text style={{ fontWeight: "900", color: "#111827" }}>상세</Text>
+                  <View
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 10,
+                      backgroundColor: status.bg,
+                      borderWidth: 1,
+                      borderColor: status.border,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Text style={{ color: status.text, fontWeight: "900", fontSize: 12 }}>{status.label}</Text>
+                  </View>
                 </Pressable>
               );
             }}
