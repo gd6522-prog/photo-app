@@ -295,7 +295,7 @@ export default function PhotoListScreen() {
 
     const adminFlag = !!data?.is_admin || wp === "관리자";
     setIsAdmin(adminFlag);
-    setAdminSeeAll(false);
+    setAdminSeeAll(adminFlag); // 관리자는 기본값 전체 보기
     setMyWorkPart(displayWp);
     setIsDriver(driver);
 
@@ -804,38 +804,6 @@ export default function PhotoListScreen() {
           </View>
         ) : (
           <>
-            {/* 토글 2개 한줄 */}
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              {isAdmin ? (
-                <View style={[styles.miniToggleCard, { flex: 1 }]}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Ionicons name="shield-checkmark-outline" size={16} color={THEME.text} />
-                    <Text style={styles.miniToggleTitle} numberOfLines={1}>
-                      관리자 전체
-                    </Text>
-                  </View>
-                  <Switch value={adminSeeAll} onValueChange={setAdminSeeAll} />
-                </View>
-              ) : (
-                <View style={{ flex: 1 }} />
-              )}
-
-              <View style={[styles.miniToggleCard, { flex: 1, opacity: isAdmin && adminSeeAll ? 0.5 : 1 }]}>
-                <View style={{ gap: 2, flex: 1, paddingRight: 8 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <MaterialCommunityIcons name="account-multiple-outline" size={16} color={THEME.text} />
-                    <Text style={styles.miniToggleTitle} numberOfLines={1}>
-                      {onlyMine ? "내것만" : "작업파트"}
-                    </Text>
-                  </View>
-                  <Text style={styles.miniToggleSub} numberOfLines={1}>
-                    {myWorkPart ? `파트: ${myWorkPart}` : "파트 미설정"}
-                  </Text>
-                </View>
-                <Switch value={onlyMine} onValueChange={setOnlyMine} disabled={isAdmin && adminSeeAll} />
-              </View>
-            </View>
-
             {/* 필터 카드 */}
             <View style={styles.card}>
               <View style={{ flexDirection: "row", gap: 10 }}>
