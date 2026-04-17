@@ -35,6 +35,7 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabas
 import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { searchStores } from "../../src/lib/storeMap";
 
 const THEME = {
   bg: "#F7F7F8",
@@ -65,6 +66,10 @@ const GPS_TOTAL_TIMEOUT_MS = 25000;
 const PUSH_NOTIFY_TIMEOUT_MS = 12000;
 const PUSH_NOTIFY_MAX_ATTEMPTS = 3;
 const TEMP_DAILY_WORK_PARTS = ["박스존", "이너존", "슬라존", "경량존", "이형존", "담배존"] as const;
+
+type DriverProfile = { id: string; name: string; car_no: string | null };
+type CarGroup = { car_no: string; drivers: DriverProfile[] };
+type StoreOption = { store_code: string; store_name: string; car_no: number | null; seq_no: number | null };
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -452,6 +457,20 @@ export default function MainMenu() {
   const [clockPhase, setClockPhase] = useState<string>("");
   const [selectedTempDailyPart, setSelectedTempDailyPart] = useState<string>("");
 
+  // 기사 호차 관련
+  const [myCarNo, setMyCarNo] = useState<string | null>(null);
+  const [carGroups, setCarGroups] = useState<CarGroup[]>([]);
+  const [supportDrivers, setSupportDrivers] = useState<DriverProfile[]>([]);
+  const [carShifts, setCarShifts] = useState<{ [userId: string]: AttendanceRow | null }>({});
+  const [carLoading, setCarLoading] = useState(false);
+  const [carBusy, setCarBusy] = useState(false);
+  const [selectedCarNo, setSelectedCarNo] = useState<string | null>(null);
+  const [carPickerOpen, setCarPickerOpen] = useState(false);
+  const [supportStoreModalOpen, setSupportStoreModalOpen] = useState(false);
+  const [supportStoreQuery, setSupportStoreQuery] = useState("");
+  const [supportStoreResults, setSupportStoreResults] = useState<StoreOption[]>([]);
+  const [supportSelectedDriver, setSupportSelectedDriver] = useState<DriverProfile | null>(null);
+
   const watchdogRef = useRef<any>(null);
   const startWatchdog = useCallback(
     (label: string) => {
@@ -473,20 +492,19 @@ export default function MainMenu() {
 
   useEffect(() => () => stopWatchdog(), [stopWatchdog]);
 
-  const requireSession = useCallback(async () => {
+  const requireSession = useCallback(async (showAlert = false) => {
     try {
       const res = await withTimeout(supabase.auth.getSession(), 12000, "세션 확인");
       if ((res as any).error) {
-        Alert.alert("auth error", (res as any).error.message);
+        if (showAlert) Alert.alert("auth error", (res as any).error.message);
         return null;
       }
       if (!(res as any).data?.session) {
-        Alert.alert("로그인 필요", "세션이 없습니다. 로그인 후 다시 시도하세요.");
+        // 세션 없음 = 로그아웃 상태 → 조용히 null 반환
         return null;
       }
       return (res as any).data.session;
-    } catch (e: any) {
-      Alert.alert("세션 오류", e?.message ?? String(e));
+    } catch {
       return null;
     }
   }, []);
@@ -526,14 +544,16 @@ export default function MainMenu() {
       const metaName = (meta?.name || meta?.full_name || meta?.nickname || "").trim();
 
       const profRes = await withTimeout(
-        supabase.from("profiles").select("name, work_part").eq("id", u.id).single(),
+        supabase.from("profiles").select("name, work_part, car_no").eq("id", u.id).single(),
         12000,
         "프로필 조회"
       );
 
       const profName = ((profRes as any).data?.name ?? "").trim();
       const profWorkPart = ((profRes as any).data?.work_part ?? "").trim();
+      const profCarNo = ((profRes as any).data?.car_no ?? "").trim() || null;
       setWorkPart(profWorkPart);
+      setMyCarNo(profCarNo);
       if (profWorkPart === "임시직") {
         try {
           setTodayTempWorkPart(await getTodayTempWorkPart(u.id));
@@ -598,6 +618,68 @@ export default function MainMenu() {
     }
   }, [requireSession]);
 
+  const loadCarData = useCallback(async (workDate?: string) => {
+    setCarLoading(true);
+    try {
+      const date = workDate ?? kstNowDateString();
+      const driversRes = await withTimeout(
+        supabase.from("profiles").select("id, name, car_no").eq("work_part", "기사").eq("approved", true),
+        12000,
+        "기사 조회"
+      );
+      const drivers: DriverProfile[] = ((driversRes as any).data ?? []).map((d: any) => ({
+        id: d.id,
+        name: d.name ?? "",
+        car_no: d.car_no ? String(d.car_no).trim() || null : null,
+      }));
+
+      const driverIds = drivers.map((d) => d.id);
+      let shiftsData: AttendanceRow[] = [];
+      if (driverIds.length > 0) {
+        const shiftsRes = await withTimeout(
+          supabase
+            .from("work_shifts")
+            .select("id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at")
+            .in("user_id", driverIds)
+            .eq("work_date", date),
+          12000,
+          "호차 출퇴근 조회"
+        );
+        shiftsData = (shiftsRes as any).data ?? [];
+      }
+
+      const shiftMap: { [id: string]: AttendanceRow } = {};
+      for (const s of shiftsData) shiftMap[(s as any).user_id] = s as AttendanceRow;
+
+      const groupMap: { [car: string]: DriverProfile[] } = {};
+      const support: DriverProfile[] = [];
+      for (const d of drivers) {
+        if (d.car_no) {
+          if (!groupMap[d.car_no]) groupMap[d.car_no] = [];
+          groupMap[d.car_no].push(d);
+        } else {
+          support.push(d);
+        }
+      }
+
+      const sorted: CarGroup[] = Object.entries(groupMap)
+        .map(([car_no, drvs]) => ({ car_no, drivers: drvs }))
+        .sort((a, b) => {
+          const na = Number(a.car_no.match(/\d+/)?.[0] ?? "9999");
+          const nb = Number(b.car_no.match(/\d+/)?.[0] ?? "9999");
+          return na - nb;
+        });
+
+      setCarGroups(sorted);
+      setSupportDrivers(support);
+      setCarShifts(shiftMap);
+    } catch {
+      // silent
+    } finally {
+      setCarLoading(false);
+    }
+  }, []);
+
   const registerPushTokenForThisUser = useCallback(async () => {
     try {
       if (!Device.isDevice) return;
@@ -631,20 +713,26 @@ export default function MainMenu() {
   useEffect(() => {
     loadAdmin();
     loadProfileName();
+    loadCarData(kstNowDateString());
     registerPushTokenForThisUser();
-  }, [loadAdmin, loadProfileName, registerPushTokenForThisUser]);
+  }, [loadAdmin, loadProfileName, loadCarData, registerPushTokenForThisUser]);
 
   useEffect(() => {
     loadAttendanceForDate(selectedWorkDate);
   }, [loadAttendanceForDate, selectedWorkDate]);
+
+  useEffect(() => {
+    if (isDriverUser) loadCarData(selectedWorkDate);
+  }, [selectedWorkDate, isDriverUser, loadCarData]);
 
   useFocusEffect(
     useCallback(() => {
       loadAdmin();
       loadProfileName();
       loadAttendanceForDate(selectedWorkDate);
+      loadCarData(selectedWorkDate);
       return () => {};
-    }, [loadAdmin, loadAttendanceForDate, loadProfileName, selectedWorkDate])
+    }, [loadAdmin, loadAttendanceForDate, loadProfileName, loadCarData, selectedWorkDate])
   );
 
   const ensureTemporaryWorkerReady = () => {
@@ -1188,6 +1276,88 @@ export default function MainMenu() {
     }
   }, [att, busy, clockOutLabel, getCurrentLocationChecked, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
 
+  const doCarClockIn = useCallback(async (group: CarGroup, workDate: string) => {
+    if (carBusy) return;
+    const session = await requireSession();
+    if (!session) return;
+    setCarBusy(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const unclocked = group.drivers.filter((d) => !carShifts[d.id]?.clock_in_at);
+      if (unclocked.length === 0) { Alert.alert("안내", "이미 모두 입차 처리되었습니다."); return; }
+      for (const driver of unclocked) {
+        await withTimeout(
+          supabase.from("work_shifts").upsert(
+            { user_id: driver.id, work_date: workDate, status: "open", clock_in_at: nowIso, clock_in_source: "vehicle" },
+            { onConflict: "user_id,work_date" }
+          ),
+          12000, "입차 저장"
+        );
+      }
+      Alert.alert("입차 완료", `${group.car_no} 입차 처리 (${unclocked.length}명)`);
+      await loadCarData();
+    } catch (e: any) {
+      Alert.alert("입차 실패", e?.message ?? String(e));
+    } finally {
+      setCarBusy(false);
+    }
+  }, [carBusy, carShifts, loadCarData, requireSession]);
+
+  const doCarClockOut = useCallback(async (group: CarGroup, workDate: string) => {
+    if (carBusy) return;
+    const session = await requireSession();
+    if (!session) return;
+    setCarBusy(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const toOut = group.drivers.filter((d) => carShifts[d.id]?.clock_in_at && !carShifts[d.id]?.clock_out_at);
+      if (toOut.length === 0) { Alert.alert("안내", "출차할 인원이 없습니다."); return; }
+      for (const driver of toOut) {
+        await withTimeout(
+          supabase.from("work_shifts").upsert(
+            { user_id: driver.id, work_date: workDate, status: "closed", clock_out_at: nowIso, clock_out_source: "vehicle" },
+            { onConflict: "user_id,work_date" }
+          ),
+          12000, "출차 저장"
+        );
+      }
+      Alert.alert("출차 완료", `${group.car_no} 출차 처리 (${toOut.length}명)`);
+      await loadCarData();
+    } catch (e: any) {
+      Alert.alert("출차 실패", e?.message ?? String(e));
+    } finally {
+      setCarBusy(false);
+    }
+  }, [carBusy, carShifts, loadCarData, requireSession]);
+
+  const doSupportClockIn = useCallback(async (driver: DriverProfile, store: StoreOption) => {
+    if (carBusy) return;
+    const session = await requireSession();
+    if (!session) return;
+    setCarBusy(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const workDate = kstNowDateString();
+      await withTimeout(
+        supabase.from("work_shifts").upsert(
+          { user_id: driver.id, work_date: workDate, status: "open", clock_in_at: nowIso, clock_in_source: `support:${store.store_code}` },
+          { onConflict: "user_id,work_date" }
+        ),
+        12000, "지원 입차 저장"
+      );
+      Alert.alert("지원 입차 완료", `${driver.name} - ${store.store_name}`);
+      setSupportStoreModalOpen(false);
+      setSupportStoreQuery("");
+      setSupportStoreResults([]);
+      setSupportSelectedDriver(null);
+      await loadCarData();
+    } catch (e: any) {
+      Alert.alert("지원 입차 실패", e?.message ?? String(e));
+    } finally {
+      setCarBusy(false);
+    }
+  }, [carBusy, loadCarData, requireSession]);
+
   const onClockIn = () => {
     if (busy) return;
     if (att?.clock_in_at) {
@@ -1213,6 +1383,14 @@ export default function MainMenu() {
 
   const approveRowVisible = useMemo(() => !loadingAdmin && isAdmin, [loadingAdmin, isAdmin]);
   const isDriverUser = useMemo(() => workPart === "기사", [workPart]);
+
+  // 내 호차 자동 선택
+  useEffect(() => {
+    if (isDriverUser && myCarNo && selectedCarNo === null && carGroups.length > 0) {
+      const found = carGroups.find((g) => g.car_no === myCarNo);
+      if (found) setSelectedCarNo(myCarNo);
+    }
+  }, [isDriverUser, myCarNo, carGroups, selectedCarNo]);
   const isTemporaryWorker = useMemo(() => workPart === "임시직", [workPart]);
   const activeWorkPart = useMemo(
     () => (isTemporaryWorker ? (todayTempWorkPart || "").trim() : (workPart || "").trim()),
@@ -1301,69 +1479,177 @@ export default function MainMenu() {
             <View style={styles.cardTitleRow}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <MaterialCommunityIcons name="clock-outline" size={18} color={THEME.text} />
-                <Text style={styles.cardTitle}>출퇴근</Text>
+                <Text style={styles.cardTitle}>{isDriverUser ? "입출차" : "출퇴근"}</Text>
               </View>
-
+              {isDriverUser && (
+                <Pressable
+                  onPress={() => setCarPickerOpen(true)}
+                  disabled={carBusy}
+                  style={styles.carSelectPill}
+                >
+                  <MaterialCommunityIcons name="truck-outline" size={14} color={THEME.subtext} />
+                  <Text style={styles.carSelectPillText}>
+                    {selectedCarNo === "지원" ? "지원" : selectedCarNo ? `${selectedCarNo}호` : "호차 선택"}
+                  </Text>
+                  <Ionicons name="chevron-down" size={12} color={THEME.subtext} />
+                </Pressable>
+              )}
             </View>
 
             <View style={styles.attDateNav}>
               <Pressable
                 onPress={() => setSelectedWorkDate((p) => shiftYmd(p, -1))}
-                disabled={busy}
-                style={[styles.attDateArrowBtn, busy && styles.btnDisabled]}
+                disabled={busy || carBusy}
+                style={[styles.attDateArrowBtn, (busy || carBusy) && styles.btnDisabled]}
               >
                 <Ionicons name="chevron-back" size={22} color={THEME.subtext} />
               </Pressable>
               <Text style={styles.attDateText}>{selectedDateLabel}</Text>
               <Pressable
                 onPress={() => setSelectedWorkDate((p) => shiftYmd(p, +1))}
-                disabled={busy || !canGoNextDay}
-                style={[styles.attDateArrowBtn, (busy || !canGoNextDay) && styles.btnDisabled]}
+                disabled={busy || carBusy || !canGoNextDay}
+                style={[styles.attDateArrowBtn, (busy || carBusy || !canGoNextDay) && styles.btnDisabled]}
               >
                 <Ionicons name="chevron-forward" size={22} color={THEME.subtext} />
               </Pressable>
             </View>
 
-            <View style={styles.attPunchRow}>
-              <Pressable
-                onPress={onClockIn}
-                disabled={busy || !isViewingToday || !!att?.clock_in_at}
-                style={[
-                  styles.attPunchBtn,
-                  att?.clock_in_at ? styles.attPunchBtnDone : styles.attPunchBtnIn,
-                  (busy || !isViewingToday) && !att?.clock_in_at && styles.btnDisabled,
-                ]}
-              >
-                <View style={styles.btnInner}>
-                  <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
-                  <Text style={att?.clock_in_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                    {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : clockInLabel}
-                  </Text>
-                </View>
-              </Pressable>
+            {/* 기사 전용: 선택된 호차 기사 목록 */}
+            {isDriverUser && selectedCarNo && selectedCarNo !== "지원" && (() => {
+              const group = carGroups.find((g) => g.car_no === selectedCarNo);
+              if (!group) return null;
+              return group.drivers.map((driver) => {
+                const sh = carShifts[driver.id];
+                return (
+                  <View key={driver.id} style={styles.driverRow}>
+                    <Text style={styles.driverName}>{driver.name}</Text>
+                    <Text style={styles.driverShiftInfo}>
+                      입차 {sh?.clock_in_at ? formatKSTTime(sh.clock_in_at) : "-"} / 출차 {sh?.clock_out_at ? formatKSTTime(sh.clock_out_at) : "-"}
+                    </Text>
+                  </View>
+                );
+              });
+            })()}
 
-              <Pressable
-                onPress={onClockOut}
-                disabled={busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at}
-                style={[
-                  styles.attPunchBtn,
-                  att?.clock_out_at ? styles.attPunchBtnDone : styles.attPunchBtnOut,
-                  (busy || !isViewingToday || !att?.clock_in_at) && !att?.clock_out_at && styles.btnDisabled,
-                ]}
-              >
-                <View style={styles.btnInner}>
-                  <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
-                  <Text style={att?.clock_out_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                    {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : clockOutLabel}
-                  </Text>
-                </View>
-              </Pressable>
-            </View>
+            {/* 기사 전용: 지원 목록 */}
+            {isDriverUser && selectedCarNo === "지원" && (
+              <View style={{ gap: 6 }}>
+                {supportDrivers.length === 0 ? (
+                  <Text style={styles.helper}>등록된 지원 기사가 없습니다.</Text>
+                ) : (
+                  supportDrivers.map((driver) => {
+                    const sh = carShifts[driver.id];
+                    return (
+                      <View key={driver.id} style={styles.driverRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.driverName}>{driver.name}</Text>
+                          <Text style={styles.driverShiftInfo}>
+                            {sh?.clock_in_at ? `입차 ${formatKSTTime(sh.clock_in_at)}` : "미입차"}
+                          </Text>
+                        </View>
+                        {!sh?.clock_in_at && (
+                          <Pressable
+                            onPress={() => {
+                              setSupportSelectedDriver(driver);
+                              setSupportStoreQuery("");
+                              setSupportStoreResults([]);
+                              setSupportStoreModalOpen(true);
+                            }}
+                            disabled={carBusy}
+                            style={[styles.supportClockInBtn, carBusy && styles.btnDisabled]}
+                          >
+                            <Text style={styles.supportClockInBtnText}>점포 지정</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            )}
 
-            {attLoading ? (
+            {/* 입차/출차 버튼: 기사-호차선택됨 / 기사-미선택(개인) / 일반직원 */}
+            {(() => {
+              if (isDriverUser && selectedCarNo && selectedCarNo !== "지원") {
+                const group = carGroups.find((g) => g.car_no === selectedCarNo);
+                if (!group) return null;
+                const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
+                const anyIn = group.drivers.some((d) => !!carShifts[d.id]?.clock_in_at);
+                const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
+                return (
+                  <View style={styles.attPunchRow}>
+                    <Pressable
+                      onPress={() => doCarClockIn(group, selectedWorkDate)}
+                      disabled={carBusy || allIn}
+                      style={[styles.attPunchBtn, allIn ? styles.attPunchBtnDone : styles.attPunchBtnIn, (carBusy || allIn) && styles.btnDisabled]}
+                    >
+                      <View style={styles.btnInner}>
+                        <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
+                        <Text style={allIn ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                          {allIn ? "입차됨" : "입차"}
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => doCarClockOut(group, selectedWorkDate)}
+                      disabled={carBusy || !anyIn || allOut}
+                      style={[styles.attPunchBtn, allOut ? styles.attPunchBtnDone : styles.attPunchBtnOut, (carBusy || !anyIn || allOut) && styles.btnDisabled]}
+                    >
+                      <View style={styles.btnInner}>
+                        <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
+                        <Text style={allOut ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                          {allOut ? "출차됨" : "출차"}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </View>
+                );
+              }
+              // 기사 호차 미선택 OR 일반 직원: 개인 입차/출차 버튼
+              return (
+                <View style={styles.attPunchRow}>
+                  <Pressable
+                    onPress={onClockIn}
+                    disabled={busy || !isViewingToday || !!att?.clock_in_at}
+                    style={[
+                      styles.attPunchBtn,
+                      att?.clock_in_at ? styles.attPunchBtnDone : styles.attPunchBtnIn,
+                      (busy || !isViewingToday) && !att?.clock_in_at && styles.btnDisabled,
+                    ]}
+                  >
+                    <View style={styles.btnInner}>
+                      <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
+                      <Text style={att?.clock_in_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                        {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : clockInLabel}
+                      </Text>
+                    </View>
+                  </Pressable>
+                  <Pressable
+                    onPress={onClockOut}
+                    disabled={busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at}
+                    style={[
+                      styles.attPunchBtn,
+                      att?.clock_out_at ? styles.attPunchBtnDone : styles.attPunchBtnOut,
+                      (busy || !isViewingToday || !att?.clock_in_at) && !att?.clock_out_at && styles.btnDisabled,
+                    ]}
+                  >
+                    <View style={styles.btnInner}>
+                      <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
+                      <Text style={att?.clock_out_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
+                        {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : clockOutLabel}
+                      </Text>
+                    </View>
+                  </Pressable>
+                </View>
+              );
+            })()}
+
+            {(attLoading || (isDriverUser && carLoading)) ? (
               <View style={styles.loadingRow}>
-                <ActivityIndicator />
-                <Text style={styles.loadingText}>출퇴근 정보 불러오는 중...</Text>
+                <ActivityIndicator size="small" />
+                <Text style={styles.loadingText}>
+                  {isDriverUser ? "호차 정보 불러오는 중..." : "출퇴근 정보 불러오는 중..."}
+                </Text>
               </View>
             ) : null}
           </View>
@@ -1415,6 +1701,105 @@ export default function MainMenu() {
           </View>
         </Pressable>
       </ScrollView>
+
+      {/* 호차 선택 모달 */}
+      <Modal visible={carPickerOpen} transparent animationType="fade" onRequestClose={() => setCarPickerOpen(false)}>
+        <Pressable style={styles.backdropFill} onPress={() => setCarPickerOpen(false)} />
+        <View style={styles.modalCenterWrap}>
+          <View style={[styles.modalBox, { maxHeight: "75%" }]}>
+            <View style={[styles.modalInner, { flex: 1 }]}>
+              <Text style={styles.modalTitle}>호차 선택</Text>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                {carGroups.length === 0 && supportDrivers.length === 0 && (
+                  <Text style={[styles.helper, { textAlign: "center", paddingVertical: 16 }]}>
+                    등록된 기사가 없습니다.{"\n"}(작업파트: 기사, 승인완료 필요)
+                  </Text>
+                )}
+                {carGroups.map((group) => {
+                  const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
+                  const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
+                  const status = allOut ? "출차완료" : allIn ? "입차중" : "대기";
+                  const statusColor = allOut ? THEME.subtext : allIn ? THEME.success : THEME.muted;
+                  const isSelected = selectedCarNo === group.car_no;
+                  return (
+                    <Pressable
+                      key={group.car_no}
+                      onPress={() => { setSelectedCarNo(group.car_no); setCarPickerOpen(false); }}
+                      style={[styles.carPickerItem, isSelected && styles.carPickerItemActive]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.carPickerCarNo, isSelected && styles.carPickerCarNoActive]}>{group.car_no}호</Text>
+                        <Text style={styles.carPickerDrivers}>{group.drivers.map((d) => d.name).join(", ")}</Text>
+                      </View>
+                      <Text style={[styles.carPickerStatus, { color: statusColor }]}>{status}</Text>
+                    </Pressable>
+                  );
+                })}
+                {supportDrivers.length > 0 && (
+                  <Pressable
+                    onPress={() => { setSelectedCarNo("지원"); setCarPickerOpen(false); }}
+                    style={[styles.carPickerItem, selectedCarNo === "지원" && styles.carPickerItemActive]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.carPickerCarNo, selectedCarNo === "지원" && styles.carPickerCarNoActive]}>지원</Text>
+                      <Text style={styles.carPickerDrivers}>{supportDrivers.map((d) => d.name).join(", ")}</Text>
+                    </View>
+                  </Pressable>
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 지원 점포 지정 모달 */}
+      <Modal visible={supportStoreModalOpen} transparent animationType="fade" onRequestClose={() => setSupportStoreModalOpen(false)}>
+        <Pressable style={styles.backdropFill} onPress={() => { setSupportStoreModalOpen(false); Keyboard.dismiss(); }} />
+        <View style={styles.modalCenterWrap}>
+          <View style={[styles.modalBox, { maxHeight: "80%" }]}>
+            <View style={[styles.modalInner, { flex: 1 }]}>
+              <Text style={styles.modalTitle}>점포 지정 입차</Text>
+              {supportSelectedDriver && (
+                <Text style={styles.modalBody}>{supportSelectedDriver.name} 지원 입차</Text>
+              )}
+              <TextInput
+                value={supportStoreQuery}
+                onChangeText={async (q) => {
+                  setSupportStoreQuery(q);
+                  if (q.trim().length >= 1) {
+                    const { rows } = await searchStores(q, 20);
+                    setSupportStoreResults(rows);
+                  } else {
+                    setSupportStoreResults([]);
+                  }
+                }}
+                placeholder="점포명 또는 코드 검색"
+                placeholderTextColor={THEME.muted}
+                style={styles.storeSearchInput}
+                autoFocus
+              />
+              <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1, maxHeight: 300 }}>
+                {supportStoreResults.map((store) => (
+                  <Pressable
+                    key={store.store_code}
+                    onPress={async () => {
+                      if (supportSelectedDriver) await doSupportClockIn(supportSelectedDriver, store);
+                    }}
+                    disabled={carBusy}
+                    style={styles.storeResultItem}
+                  >
+                    <Text style={styles.storeResultCode}>{store.store_code}</Text>
+                    <Text style={styles.storeResultName}>{store.store_name}</Text>
+                  </Pressable>
+                ))}
+                {supportStoreResults.length === 0 && supportStoreQuery.trim().length >= 1 && (
+                  <Text style={[styles.mutedCenter, { padding: 16 }]}>검색 결과 없음</Text>
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 출근/입차 확인 모달 */}
       <Modal visible={clockInConfirmOpen} transparent animationType="fade" onRequestClose={() => setClockInConfirmOpen(false)}>
@@ -1911,4 +2296,94 @@ const styles = StyleSheet.create({
   },
   inlineCenter: { flexDirection: "row", alignItems: "center", gap: 10 },
   smallNote: { color: THEME.muted, fontSize: 11, textAlign: "center", lineHeight: 16 },
+
+  // 기사 호차 관련
+  carSelectHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderStyle: "dashed" as any,
+    backgroundColor: THEME.soft,
+  },
+  carSelectHintText: { color: THEME.subtext, fontWeight: "700", fontSize: 14 },
+
+  carSelectPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: THEME.soft,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  carSelectPillText: { color: THEME.subtext, fontSize: 13, fontWeight: "700" },
+
+  driverRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: THEME.soft,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    gap: 8,
+  },
+  driverName: { fontWeight: "800", color: THEME.text, fontSize: 14, minWidth: 60 },
+  driverShiftInfo: { color: THEME.subtext, fontSize: 12, fontWeight: "600", flex: 1 },
+
+  supportClockInBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: THEME.soft,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  supportClockInBtnText: { color: THEME.text, fontWeight: "800", fontSize: 12 },
+
+  carPickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.border,
+    gap: 8,
+  },
+  carPickerItemActive: { backgroundColor: "#F0FDF4" },
+  carPickerCarNo: { fontWeight: "800", fontSize: 15, color: THEME.text },
+  carPickerCarNoActive: { color: THEME.success },
+  carPickerDrivers: { color: THEME.subtext, fontSize: 12, marginTop: 2 },
+  carPickerStatus: { fontWeight: "700", fontSize: 12 },
+
+  storeSearchInput: {
+    height: 46,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    backgroundColor: THEME.soft,
+    color: THEME.text,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  storeResultItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.border,
+  },
+  storeResultCode: { color: THEME.subtext, fontWeight: "700", fontSize: 13, minWidth: 60 },
+  storeResultName: { color: THEME.text, fontWeight: "700", fontSize: 14, flex: 1 },
 });
