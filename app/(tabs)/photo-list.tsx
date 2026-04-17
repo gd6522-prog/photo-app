@@ -707,7 +707,7 @@ export default function PhotoListScreen() {
       {/* 헤더 */}
       <View style={[styles.headerWrap, { paddingTop: topPad }]}>
         <View style={styles.headerTopRow}>
-          <Image source={require("../../assets/hanexpress-logo.png")} style={styles.headerLogoLeft} />
+          <Text style={styles.headerTitleLeft}>{isDriver ? "기사 사진 조회" : "사진 조회"}</Text>
           <View style={{ flex: 1 }} />
           <Pressable
             onPress={() => fetchList()}
@@ -718,11 +718,6 @@ export default function PhotoListScreen() {
             <Ionicons name="refresh" size={18} color={THEME.text} />
           </Pressable>
         </View>
-
-        <Text style={styles.h1}>{isDriver ? "기사 사진 조회" : "사진 조회"}</Text>
-        <Text style={styles.h2}>
-          {isDriver ? "날짜 + 공병/담배/미오출 탭으로 내 업로드만 조회합니다." : "날짜/검수점포로 조회 후 미리보기 또는 삭제하세요."}
-        </Text>
 
         <View style={styles.badgeRow}>
           <View style={styles.badge}>
@@ -1347,7 +1342,7 @@ const styles = StyleSheet.create({
 
   headerWrap: { paddingHorizontal: 16, paddingBottom: 10 },
   headerTopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerLogoLeft: { width: 160, height: 40, resizeMode: "contain", alignSelf: "flex-start" },
+  headerTitleLeft: { fontSize: 24, fontWeight: "900", color: THEME.text, letterSpacing: -0.4 },
 
   h1: { marginTop: 10, fontSize: 20, fontWeight: "900", color: THEME.text, letterSpacing: -0.2 },
   h2: { marginTop: 6, color: THEME.subtext, lineHeight: 18, fontSize: 13 },
