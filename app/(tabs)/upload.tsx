@@ -8,7 +8,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  useWindowDimensions,
   FlatList,
   Image,
   Keyboard,
@@ -289,24 +288,12 @@ export default function UploadScreen() {
 
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
-  const { height: windowHeight } = useWindowDimensions();
-  // 플랫폼별로 하단 고정 패널 위치를 다르게 잡아 탭바와의 간격을 맞춘다.
-  const bottomDockOffset =
-    Platform.OS === "ios" ? Math.max(insets.bottom + 52, 74) : Math.max(tabBarHeight - 52, 18);
   const topPad = Math.min(Math.max(insets.top, 6), 18) + 4;
-
-  const bottomPad = Platform.OS === "ios" ? Math.max(insets.bottom, 10) + 6 : Math.max(insets.bottom, 0) + 2;
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(264);
-  const listReserveBottom = bottomDockOffset + bottomPad + bottomPanelHeight + 72;
+  const bottomPad = tabBarHeight + Math.max(insets.bottom, 0) + 8;
   const [isDriver, setIsDriver] = useState(false);
 
   // ✅ 키보드 올라올 때 밀어올릴 기준 (탭바/세이프영역 고려)
   const keyboardOffset = tabBarHeight + Math.max(insets.bottom, 0);
-  const resultsBoxHeight = useMemo(() => {
-    // 가운데 결과 영역은 가능한 크게 쓰고, 하단 고정 패널만 침범하지 않도록 최소 여백만 남긴다.
-    const estimated = windowHeight - (isDriver ? 610 : 610);
-    return Math.max(220, Math.min(isDriver ? 360 : 420, estimated));
-  }, [windowHeight, isDriver]);
 
   // ===== 공통 =====
   const [selectedStore, setSelectedStore] = useState<StoreMapRow | null>(null);
@@ -1025,7 +1012,7 @@ export default function UploadScreen() {
     miochulPlanned && mioPicked.length > 0
       ? `납품예정일 ${miochulPlanned} / ${mioPicked.join(", ")}${miochulDetail.trim() ? " / 상세 있음" : ""}`
       : "미오출 정보 미설정";
-  const listBottomSpacer = <View style={{ height: 116 }} />;
+  const listBottomSpacer = <View style={{ height: 16 }} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
@@ -1245,8 +1232,8 @@ export default function UploadScreen() {
           </View>
 
           {/* ✅ 리스트 영역 */}
-          <View style={{ paddingHorizontal: 16, paddingBottom: listReserveBottom }}>
-            <View style={[styles.listBox, { height: resultsBoxHeight }]}>
+          <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: 8 }}>
+            <View style={[styles.listBox, { flex: 1 }]}>
               {isDriver ? (
                 isSupport ? (
                   <FlatList
@@ -1330,13 +1317,7 @@ export default function UploadScreen() {
           </View>
 
           {/* ✅ bottomWrap */}
-          <View
-            onLayout={(e) => {
-              const h = Math.ceil(e.nativeEvent.layout.height);
-              if (h > 0 && h !== bottomPanelHeight) setBottomPanelHeight(h);
-            }}
-            style={[styles.bottomWrapFloating, { bottom: bottomDockOffset, paddingBottom: bottomPad }]}
-          >
+          <View style={[styles.bottomWrap, { paddingBottom: bottomPad }]}>
             <View style={styles.bottomHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.bottomHeaderTitle} numberOfLines={1}>
@@ -1766,10 +1747,7 @@ const styles = StyleSheet.create({
   },
   doneText: { fontWeight: "900", color: THEME.success, fontSize: 12 },
 
-  bottomWrapFloating: {
-    position: "absolute",
-    left: 0,
-    right: 0,
+  bottomWrap: {
     paddingHorizontal: 16,
     paddingTop: 10,
     borderTopWidth: 1,
