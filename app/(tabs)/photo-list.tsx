@@ -11,7 +11,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Switch,
   Text,
@@ -29,7 +28,7 @@ import * as MediaLibrary from "expo-media-library";
 
 // ✅ 안전영역/탭바 겹침 방지
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 const THEME = {
   bg: "#F7F7F8",
@@ -201,7 +200,7 @@ export default function PhotoListScreen() {
   const tabBarHeight = useBottomTabBarHeight();
 
   const topPad = Math.min(Math.max(insets.top, 6), 18) + 6;
-  const bottomPad = tabBarHeight + Math.max(insets.bottom, 16) + 22;
+  const bottomPad = tabBarHeight + Math.max(insets.bottom, 0) + 8;
 
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -703,7 +702,7 @@ export default function PhotoListScreen() {
   }, [dateStr, selectedStore, searchText, isAdmin, adminSeeAll, onlyMine, myWorkPart, isDriver, driverDisplayCategory]);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       {/* 헤더 */}
       <View style={[styles.headerWrap, { paddingTop: topPad }]}>
         <View style={styles.headerTopRow}>
@@ -945,7 +944,7 @@ export default function PhotoListScreen() {
 
       {/* 리스트 */}
       <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: bottomPad }}>
-        <View style={styles.listBox}>
+        <View style={[styles.listBox, { flex: 1 }]}>
           <FlatList
             data={groupedByStore}
             keyExtractor={(g) => g.store_code}
@@ -1038,11 +1037,6 @@ export default function PhotoListScreen() {
           />
         </View>
 
-        <Text style={styles.hint}>
-          {isDriver
-            ? "기사 조회: 내 업로드만 · 공병/담배/미오출 탭으로 전환"
-            : "선택 버튼으로 선택모드 ON/OFF · 선택모드에서는 점포 줄 탭으로 그룹 단위 선택/해제"}
-        </Text>
       </View>
 
       {/* 미리보기 */}
@@ -1531,7 +1525,7 @@ const styles = StyleSheet.create({
   },
   smallDangerText: { fontWeight: "950" as any, color: THEME.danger, fontSize: 12 },
 
-  previewImage: { width: "100%", height: 340, borderRadius: 16, backgroundColor: "#F3F4F6" },
+  previewImage: { width: "100%", aspectRatio: 4 / 3, borderRadius: 16, backgroundColor: "#F3F4F6" },
 
   modalBox: {
     position: "absolute",
