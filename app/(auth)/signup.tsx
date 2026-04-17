@@ -28,6 +28,19 @@ const WORK_PARTS: Option[] = [
   { label: "임시직", value: "임시직" },
 ];
 
+const CENTER_OPTIONS: Option[] = [
+  { label: "선택", value: "" },
+  { label: "화성센터", value: "화성센터" },
+];
+
+const COMPANY_OPTIONS: Option[] = [
+  { label: "선택", value: "" },
+  { label: "한익스프레스", value: "한익스프레스" },
+  { label: "경산씨스템", value: "경산씨스템" },
+  { label: "더블에스잡", value: "더블에스잡" },
+  { label: "비상GLS", value: "비상GLS" },
+];
+
 // ✅ 국적: 지정 6개 + 직접입력
 const NATIONALITIES: Option[] = [
   { label: "대한민국 (KR)", value: "KR" },
@@ -192,6 +205,8 @@ export default function SignupScreen() {
   const [nationalityCustom, setNationalityCustom] = useState("");
 
   const [workPart, setWorkPart] = useState("");
+  const [center, setCenter] = useState("");
+  const [company, setCompany] = useState("");
 
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
@@ -202,6 +217,8 @@ export default function SignupScreen() {
 
   const [workPartOpen, setWorkPartOpen] = useState(false);
   const [nationOpen, setNationOpen] = useState(false);
+  const [centerOpen, setCenterOpen] = useState(false);
+  const [companyOpen, setCompanyOpen] = useState(false);
 
   // ✅ 전화번호 사전 확인 상태
   const [phoneChecked, setPhoneChecked] = useState(false);
@@ -257,9 +274,11 @@ export default function SignupScreen() {
       passOk &&
       birthOk &&
       nationalityOk &&
-      workPart.trim().length > 0
+      workPart.trim().length > 0 &&
+      center.trim().length > 0 &&
+      company.trim().length > 0
     );
-  }, [name, e164, passOk, birthOk, nationalityOk, workPart]);
+  }, [name, e164, passOk, birthOk, nationalityOk, workPart, center, company]);
 
   // ✅ 가입 진행 조건: 기본폼 OK + 전화번호 확인 완료 + (이미가입 아님)
   const formOk = useMemo(() => {
@@ -380,6 +399,8 @@ export default function SignupScreen() {
           data: {
             name: name.trim(),
             work_part: workPart.trim(),
+            center: center.trim(),
+            company_name: company.trim(),
             phone: e164,
             phone_verified: false,
             birthdate: birthdateDashed,
@@ -414,6 +435,8 @@ export default function SignupScreen() {
       if (name.trim().length < 2) throw new Error("이름을 2글자 이상 입력해 주세요.");
       if (!birthOk) throw new Error("생년월일 8자리를 정확히 입력해 주세요.");
       if (!workPart.trim()) throw new Error("작업파트를 선택해 주세요.");
+      if (!center.trim()) throw new Error("센터를 선택해 주세요.");
+      if (!company.trim()) throw new Error("회사를 선택해 주세요.");
       if (!passOk) throw new Error("비밀번호를 다시 확인해 주세요.");
       if (!nationalityOk) throw new Error("국적을 입력/선택해주세요.");
 
@@ -486,6 +509,8 @@ export default function SignupScreen() {
           phone: e164Fixed,
           name: name.trim(),
           work_part: workPart.trim(),
+          center: center.trim(),
+          company_name: company.trim(),
           birthdate: birthdateDashed,
           nationality: nationalityFinal,
           language: lang,
@@ -764,6 +789,24 @@ export default function SignupScreen() {
               onPress={() => setWorkPartOpen(true)}
             />
 
+            <OneLineSelect
+              label="센터"
+              value={center}
+              placeholder="선택"
+              options={CENTER_OPTIONS}
+              disabled={loading || otpSent}
+              onPress={() => setCenterOpen(true)}
+            />
+
+            <OneLineSelect
+              label="회사"
+              value={company}
+              placeholder="선택"
+              options={COMPANY_OPTIONS}
+              disabled={loading || otpSent}
+              onPress={() => setCompanyOpen(true)}
+            />
+
             {!otpSent ? (
               <Pressable
                 onPress={onSendOtp}
@@ -859,6 +902,22 @@ export default function SignupScreen() {
             options={WORK_PARTS}
             onClose={() => setWorkPartOpen(false)}
             onChange={(v) => setWorkPart(v)}
+          />
+          <PickerModal
+            visible={centerOpen}
+            title="센터 선택"
+            value={center}
+            options={CENTER_OPTIONS}
+            onClose={() => setCenterOpen(false)}
+            onChange={(v) => setCenter(v)}
+          />
+          <PickerModal
+            visible={companyOpen}
+            title="회사 선택"
+            value={company}
+            options={COMPANY_OPTIONS}
+            onClose={() => setCompanyOpen(false)}
+            onChange={(v) => setCompany(v)}
           />
         </ScrollView>
       </KeyboardAvoidingView>
