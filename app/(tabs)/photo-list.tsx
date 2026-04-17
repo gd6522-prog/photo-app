@@ -1046,8 +1046,8 @@ export default function PhotoListScreen() {
         onRequestClose={() => setPreviewOpen(false)}
         presentationStyle="fullScreen"
       >
-        <SafeAreaView style={styles.safe}>
-          <View style={[styles.previewHeader, { paddingTop: topPad }]}>
+        <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+          <View style={[styles.previewHeader, { paddingTop: 10 }]}>
             <View style={{ flex: 1 }}>
               <Text style={styles.previewTitleOneLine} numberOfLines={1}>
                 {previewTitle}
@@ -1065,7 +1065,7 @@ export default function PhotoListScreen() {
           <FlatList
             data={previewItems}
             keyExtractor={(p) => p.id}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: bottomPad, gap: 10 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: bottomPad, gap: 10 }}
             renderItem={({ item }) => {
               const isMio = String(item.category ?? "") === "miochul";
               const isMetaOnly = String(item.original_url ?? "").startsWith("meta://");
