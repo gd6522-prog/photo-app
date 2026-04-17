@@ -293,7 +293,8 @@ export default function PhotoListScreen() {
       displayWp = todayWp;
     }
 
-    setIsAdmin(!!data?.is_admin);
+    const adminFlag = !!data?.is_admin || wp === "관리자";
+    setIsAdmin(adminFlag);
     setAdminSeeAll(false);
     setMyWorkPart(displayWp);
     setIsDriver(driver);
