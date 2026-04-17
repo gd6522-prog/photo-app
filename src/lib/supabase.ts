@@ -10,8 +10,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     storage: AsyncStorage,
     persistSession: true,
-    // Keep auto refresh off so a broken saved refresh token does not keep retrying on app startup.
-    autoRefreshToken: false,
+    autoRefreshToken: true,
     detectSessionInUrl: false,
   },
 });
