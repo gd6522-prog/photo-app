@@ -127,7 +127,7 @@ export default function HazardReportsScreen() {
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState("");
-  const [previewPhotos, setPreviewPhotos] = useState<{ url: string; path: string }[]>([]);
+  const [previewPhotos, setPreviewPhotos] = useState<{ url: string; path: string; created_at?: string }[]>([]);
   const [previewComment, setPreviewComment] = useState("");
   const [previewReportId, setPreviewReportId] = useState<string>("");
   const [previewResolution, setPreviewResolution] = useState<ResolutionRow | null>(null);
@@ -310,17 +310,17 @@ export default function HazardReportsScreen() {
 
   const openPreview = (report: ReportRow) => {
     const extra = photoMap[report.id] ?? [];
-    const items: { url: string; path: string }[] = [];
+    const items: { url: string; path: string; created_at?: string }[] = [];
 
     if (report.photo_url && report.photo_path) {
-      items.push({ url: report.photo_url, path: report.photo_path });
+      items.push({ url: report.photo_url, path: report.photo_path, created_at: report.created_at });
     }
     for (const photo of extra) {
       const url = photo.photo_url ?? "";
       const path = photo.photo_path ?? "";
       if (!url || !path) continue;
       if (items.find((item) => item.path === path)) continue;
-      items.push({ url, path });
+      items.push({ url, path, created_at: photo.created_at });
     }
 
     setPreviewReportId(report.id);
@@ -560,11 +560,6 @@ export default function HazardReportsScreen() {
           </View>
 
           <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24, gap: 14 }}>
-            <View style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, backgroundColor: "#FFFFFF", padding: 14 }}>
-              <Text style={{ fontWeight: "900", color: "#111827" }}>제보 코멘트</Text>
-              <Text style={{ color: "#6B7280", marginTop: 6 }}>{previewComment || "(없음)"}</Text>
-            </View>
-
             <View style={{ gap: 10 }}>
               <Text style={{ fontWeight: "900", color: "#111827", fontSize: 15 }}>제보 사진</Text>
               {previewPhotos.length === 0 ? (
@@ -572,13 +567,14 @@ export default function HazardReportsScreen() {
                   <Text style={{ color: "#6B7280" }}>사진이 없습니다.</Text>
                 </View>
               ) : (
-                previewPhotos.map((item) => (
+                previewPhotos.map((item, idx) => (
                   <View key={item.path} style={{ borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 16, padding: 12, backgroundColor: "#FFFFFF" }}>
                     <Image source={{ uri: item.url }} style={{ width: "100%", height: 320, borderRadius: 14, backgroundColor: "#F3F4F6" }} resizeMode="contain" />
-                    <View style={{ height: 8 }} />
-                    <Text style={{ color: "#9CA3AF", fontSize: 12 }} numberOfLines={1}>
-                      {item.path}
-                    </Text>
+                    <View style={{ height: 10 }} />
+                    <Text style={{ color: "#374151", fontWeight: "800" }}>제보일시: {formatKST(item.created_at)}</Text>
+                    {idx === 0 && previewComment ? (
+                      <Text style={{ color: "#374151", marginTop: 6 }}>{previewComment}</Text>
+                    ) : null}
                   </View>
                 ))
               )}
