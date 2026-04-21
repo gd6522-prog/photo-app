@@ -689,11 +689,27 @@ export default function UploadScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
       selectionLimit: 0,
-      quality: 0.9,
+      quality: 0.85,
+      exif: false,
     });
 
     if (picked.canceled) return;
-    addToQueue(picked.assets ?? []);
+    const assets = picked.assets ?? [];
+    const compressed = await Promise.all(assets.map(compressAsset));
+    addToQueue(compressed);
+  };
+
+  const compressAsset = async (asset: ImagePicker.ImagePickerAsset): Promise<ImagePicker.ImagePickerAsset> => {
+    try {
+      const result = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 1920 } }],
+        { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      return { ...asset, uri: result.uri, width: result.width, height: result.height };
+    } catch {
+      return asset;
+    }
   };
 
   const takePhotoToQueue = async () => {
@@ -705,9 +721,12 @@ export default function UploadScreen() {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) return Alert.alert("권한 필요", "카메라 권한을 허용해주세요.");
 
-    const shot = await ImagePicker.launchCameraAsync({ quality: 0.9 });
+    const shot = await ImagePicker.launchCameraAsync({ quality: 0.85, exif: false });
     if (shot.canceled) return;
-    addToQueue(shot.assets ?? []);
+
+    const assets = shot.assets ?? [];
+    const compressed = await Promise.all(assets.map(compressAsset));
+    addToQueue(compressed);
   };
 
   // ✅ 현장(photos) insert robust
