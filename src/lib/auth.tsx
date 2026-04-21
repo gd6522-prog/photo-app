@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { clearSupabaseAuthStorage, isRefreshTokenError, supabase } from "./supabase";
+import { getOrCreateDeviceId } from "./deviceId";
 
 type AuthValue = {
   session: any | null;
@@ -29,6 +30,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(null);
           return;
         }
+
+        // 앱 재실행 시 기기 검증: 다른 기기에서 로그인됐으면 강제 로그아웃
+        if (data.session?.user) {
+          try {
+            const deviceId = await getOrCreateDeviceId();
+            const { data: prof } = await supabase
+              .from("profiles")
+              .select("device_id")
+              .eq("id", data.session.user.id)
+              .single();
+
+            if (prof?.device_id && prof.device_id !== deviceId) {
+              await clearSupabaseAuthStorage();
+              if (!mounted) return;
+              setSession(null);
+              setLoading(false);
+              return;
+            }
+          } catch {
+            // 네트워크 오류 등은 무시하고 세션 유지
+          }
+        }
+
         if (!mounted) return;
         setSession(data.session ?? null);
       } catch (e: any) {

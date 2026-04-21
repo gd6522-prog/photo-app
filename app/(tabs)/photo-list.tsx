@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   Image,
   Keyboard,
@@ -18,6 +19,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { Calendar } from "react-native-calendars";
 import { supabase } from "../../src/lib/supabase";
 import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
@@ -29,6 +32,8 @@ import * as MediaLibrary from "expo-media-library";
 // ✅ 안전영역/탭바 겹침 방지
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
 
 const THEME = {
   bg: "#F7F7F8",
@@ -193,6 +198,262 @@ function buildStoreTitle(meta: StoreMapRow | SelectedStore | undefined, fallback
   return `${car} - ${seq}  ${code} ${name}`.trim();
 }
 
+const SPRING = { damping: 18, stiffness: 200, mass: 0.8 };
+
+// 각 이미지 슬라이드 — 위치를 shared value로만 계산해서 React 재렌더 없이 플래시 제거
+function ImageSlide({
+  item,
+  imageIdx,
+  idxSV,
+  swipeX,
+  scale,
+  panX,
+  panY,
+}: {
+  item: PhotoRow;
+  imageIdx: number;
+  idxSV: any;
+  swipeX: any;
+  scale: any;
+  panX: any;
+  panY: any;
+}) {
+  const imgStyle = useAnimatedStyle(() => {
+    const isCenter = imageIdx === idxSV.value;
+    const baseX = (imageIdx - idxSV.value) * SCREEN_W + swipeX.value;
+    if (isCenter && scale.value > 1) {
+      return {
+        transform: [
+          { translateX: panX.value },
+          { translateY: panY.value },
+          { scale: scale.value },
+        ],
+      };
+    }
+    return {
+      transform: [
+        { translateX: baseX },
+        { scale: isCenter ? scale.value : 1 },
+      ],
+    };
+  });
+  return (
+    <Animated.Image
+      source={{ uri: item.original_url }}
+      style={[{ position: "absolute", width: SCREEN_W, height: SCREEN_H }, imgStyle]}
+      resizeMode="contain"
+    />
+  );
+}
+
+function LightboxModal({
+  visible,
+  items,
+  initialIndex,
+  onClose,
+  storeMeta,
+}: {
+  visible: boolean;
+  items: PhotoRow[];
+  initialIndex: number;
+  onClose: () => void;
+  storeMeta: Record<string, StoreMapRow>;
+}) {
+  // windowCenter는 헤더 표시 및 렌더 윈도우 결정용 React state
+  const [windowCenter, setWindowCenter] = useState(initialIndex);
+
+  const idxSV = useSharedValue(initialIndex);
+  const totalSV = useSharedValue(items.length);
+  const swipeX = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
+  const panX = useSharedValue(0);
+  const panY = useSharedValue(0);
+  const savedPanX = useSharedValue(0);
+  const savedPanY = useSharedValue(0);
+
+  useEffect(() => { totalSV.value = items.length; }, [items.length]);
+
+  useEffect(() => {
+    if (visible) {
+      idxSV.value = initialIndex;
+      swipeX.value = 0;
+      scale.value = 1; savedScale.value = 1;
+      panX.value = 0; savedPanX.value = 0;
+      panY.value = 0; savedPanY.value = 0;
+      setWindowCenter(initialIndex);
+    }
+  }, [visible, initialIndex]);
+
+  // 페이지 전환 시 줌 리셋
+  useEffect(() => {
+    scale.value = 1; savedScale.value = 1;
+    panX.value = 0; savedPanX.value = 0;
+    panY.value = 0; savedPanY.value = 0;
+  }, [windowCenter]);
+
+  const commitTo = (newIdx: number) => {
+    setWindowCenter(newIdx);
+  };
+
+  const resetZoom = () => {
+    "worklet";
+    scale.value = withSpring(1, SPRING);
+    panX.value = withSpring(0, SPRING);
+    panY.value = withSpring(0, SPRING);
+    savedScale.value = 1; savedPanX.value = 0; savedPanY.value = 0;
+  };
+
+  const pinch = Gesture.Pinch()
+    .onStart(() => { "worklet"; savedScale.value = scale.value; })
+    .onUpdate((e) => { "worklet"; scale.value = Math.min(Math.max(savedScale.value * e.scale, 0.5), 5); })
+    .onEnd(() => {
+      "worklet";
+      if (scale.value < 1) resetZoom();
+      else savedScale.value = scale.value;
+    });
+
+  const pan = Gesture.Pan()
+    .activeOffsetX([-12, 12])
+    .failOffsetY([-20, 20])
+    .onStart(() => {
+      "worklet";
+      savedPanX.value = panX.value;
+      savedPanY.value = panY.value;
+    })
+    .onUpdate((e) => {
+      "worklet";
+      if (scale.value > 1) {
+        panX.value = savedPanX.value + e.translationX;
+        panY.value = savedPanY.value + e.translationY;
+      } else {
+        swipeX.value = e.translationX;
+      }
+    })
+    .onEnd((e) => {
+      "worklet";
+      if (scale.value > 1) {
+        savedPanX.value = panX.value;
+        savedPanY.value = panY.value;
+        return;
+      }
+      const threshold = SCREEN_W * 0.25;
+      const fastSwipe = Math.abs(e.velocityX) > 500;
+      if ((e.translationX < -threshold || (fastSwipe && e.velocityX < 0)) && idxSV.value < totalSV.value - 1) {
+        swipeX.value = withTiming(-SCREEN_W, { duration: 200 }, (finished) => {
+          "worklet";
+          if (finished) {
+            // idxSV와 swipeX를 같은 프레임에서 업데이트 → 플래시 없음
+            idxSV.value = idxSV.value + 1;
+            swipeX.value = 0;
+            runOnJS(commitTo)(idxSV.value);
+          }
+        });
+      } else if ((e.translationX > threshold || (fastSwipe && e.velocityX > 0)) && idxSV.value > 0) {
+        swipeX.value = withTiming(SCREEN_W, { duration: 200 }, (finished) => {
+          "worklet";
+          if (finished) {
+            idxSV.value = idxSV.value - 1;
+            swipeX.value = 0;
+            runOnJS(commitTo)(idxSV.value);
+          }
+        });
+      } else {
+        swipeX.value = withSpring(0, SPRING);
+      }
+    });
+
+  const doubleTap = Gesture.Tap()
+    .numberOfTaps(2)
+    .maxDuration(250)
+    .onEnd(() => {
+      "worklet";
+      if (savedScale.value > 1) resetZoom();
+      else { scale.value = withSpring(2.5, SPRING); savedScale.value = 2.5; }
+    });
+
+  const gesture = Gesture.Simultaneous(doubleTap, pinch, pan);
+
+  if (!visible || items.length === 0) return null;
+
+  const RENDER_WINDOW = 2;
+  const startRenderIdx = Math.max(0, windowCenter - RENDER_WINDOW);
+  const endRenderIdx = Math.min(items.length - 1, windowCenter + RENDER_WINDOW);
+
+  const cur = items[windowCenter];
+  const meta = cur ? storeMeta[cur.store_code] : null;
+  const car = meta?.car_no ?? "-";
+  const seq = meta?.seq_no ?? "-";
+  const code = cur?.store_code ?? "";
+  const name = cur?.store_name ?? meta?.store_name ?? "";
+  const date = cur ? formatKST(cur.created_at).slice(0, 10) : "";
+
+  const slideItems: Array<{ item: PhotoRow; imageIdx: number }> = [];
+  for (let i = startRenderIdx; i <= endRenderIdx; i++) {
+    slideItems.push({ item: items[i], imageIdx: i });
+  }
+
+  return (
+    <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 100, backgroundColor: "#000" }}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        {/* 헤더 */}
+        <View style={lbStyles.header}>
+          <Text style={lbStyles.counter}>{windowCenter + 1}/{items.length}</Text>
+          <Text style={lbStyles.timeText} numberOfLines={1}>{car}-{seq} {code} {name}  {date}</Text>
+          <Pressable onPress={onClose} style={lbStyles.closeBtn} hitSlop={8}>
+            <Ionicons name="close" size={22} color="#fff" />
+          </Pressable>
+        </View>
+
+        {/* 이미지 영역 */}
+        <GestureDetector gesture={gesture}>
+          <View style={{ flex: 1, overflow: "hidden" }}>
+            {slideItems.map(({ item, imageIdx }) => (
+              <ImageSlide
+                key={item.id}
+                item={item}
+                imageIdx={imageIdx}
+                idxSV={idxSV}
+                swipeX={swipeX}
+                scale={scale}
+                panX={panX}
+                panY={panY}
+              />
+            ))}
+          </View>
+        </GestureDetector>
+      </GestureHandlerRootView>
+    </View>
+  );
+}
+
+const lbStyles = StyleSheet.create({
+  header: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: 52,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 10,
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  counter: { color: "#fff", fontWeight: "900", fontSize: 14 },
+  timeText: { flex: 1, color: "rgba(255,255,255,0.75)", fontSize: 12, fontWeight: "700" },
+  closeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
+
 export default function PhotoListScreen() {
   const router = useRouter();
 
@@ -237,6 +498,9 @@ export default function PhotoListScreen() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState("");
   const [previewItems, setPreviewItems] = useState<PhotoRow[]>([]);
+
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
   const driverPathCategory = getDriverCategoryPath(driverCategory, washStage);
   const driverDisplayCategory = getDriverCategoryDisplay(driverCategory, washStage);
 
@@ -380,7 +644,8 @@ export default function PhotoListScreen() {
           .gte("created_at", startUTC)
           .lt("created_at", endUTC)
           .ilike("path", `${driverPathCategory}/%`)
-          .order("created_at", { ascending: false });
+          .order("created_at", { ascending: false })
+          .limit(500);
 
         if (error) throw error;
 
@@ -404,6 +669,7 @@ export default function PhotoListScreen() {
           };
         });
 
+        // photos 먼저 표시하고 메타는 병렬로
         setPhotos(rows);
 
         const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
@@ -413,7 +679,8 @@ export default function PhotoListScreen() {
           const { data: meta, error: metaErr } = await supabase
             .from("store_map")
             .select("store_code, store_name, car_no, seq_no")
-            .in("store_code", codes);
+            .in("store_code", codes)
+            .limit(codes.length);
 
           if (!metaErr) {
             const map: Record<string, StoreMapRow> = {};
@@ -431,29 +698,35 @@ export default function PhotoListScreen() {
           )
           .gte("created_at", startUTC)
           .lt("created_at", endUTC)
-          .order("created_at", { ascending: false });
+          .order("created_at", { ascending: false })
+          .limit(500);
 
-        // ✅ 기존: 1) 검수점포 선택이 있으면 store_code 필터
+        // 검수점포 선택 시 store_code 필터
+        let prefetchedMeta: Record<string, StoreMapRow> | null = null;
+
         if (selectedStore?.store_code) {
           q = q.eq("store_code", selectedStore.store_code);
         } else {
-          // ✅ 2) 없으면 검색 텍스트로 매칭(코드/명)
           const kwRaw = searchText.trim();
           if (kwRaw) {
             const kw = escapeLike(kwRaw);
 
+            // store_map 조회 + 메타 미리 확보 (재조회 불필요)
             const { data: hits, error: hitErr } = await supabase
               .from("store_map")
-              .select("store_code")
+              .select("store_code, store_name, car_no, seq_no")
               .or(`store_code.ilike.%${kw}%,store_name.ilike.%${kw}%`)
-              .limit(300);
+              .limit(200);
 
             if (hitErr) {
               q = q.eq("store_code", kwRaw);
             } else {
-              const codes = Array.from(
-                new Set(((hits ?? []) as any[]).map((r) => String(r.store_code ?? "").trim()).filter(Boolean))
-              );
+              const hitRows = (hits ?? []) as StoreMapRow[];
+              const codes = Array.from(new Set(hitRows.map((r) => r.store_code).filter(Boolean)));
+
+              // 메타 미리 캐시 → 뒤에서 store_map 재조회 생략
+              prefetchedMeta = {};
+              for (const r of hitRows) prefetchedMeta[r.store_code] = r;
 
               if (codes.length === 0) q = q.eq("store_code", "__no_match__");
               else if (codes.length === 1) q = q.eq("store_code", codes[0]);
@@ -462,7 +735,7 @@ export default function PhotoListScreen() {
           }
         }
 
-        // ✅ 권한 필터(기존)
+        // 권한 필터
         if (isAdmin && adminSeeAll) {
           // 전체
         } else {
@@ -480,21 +753,27 @@ export default function PhotoListScreen() {
         const rows = (data ?? []) as PhotoRow[];
         setPhotos(rows);
 
-        const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
-        if (codes.length === 0) {
-          setStoreMeta({});
+        if (prefetchedMeta) {
+          // 검색어 경우: 이미 확보한 메타 재사용 (추가 쿼리 없음)
+          setStoreMeta(prefetchedMeta);
         } else {
-          const { data: meta, error: metaErr } = await supabase
-            .from("store_map")
-            .select("store_code, store_name, car_no, seq_no")
-            .in("store_code", codes);
-
-          if (!metaErr) {
-            const map: Record<string, StoreMapRow> = {};
-            for (const r of (meta ?? []) as StoreMapRow[]) map[r.store_code] = r;
-            setStoreMeta(map);
-          } else {
+          const codes = Array.from(new Set(rows.map((p) => p.store_code))).filter(Boolean);
+          if (codes.length === 0) {
             setStoreMeta({});
+          } else {
+            const { data: meta, error: metaErr } = await supabase
+              .from("store_map")
+              .select("store_code, store_name, car_no, seq_no")
+              .in("store_code", codes)
+              .limit(codes.length);
+
+            if (!metaErr) {
+              const map: Record<string, StoreMapRow> = {};
+              for (const r of (meta ?? []) as StoreMapRow[]) map[r.store_code] = r;
+              setStoreMeta(map);
+            } else {
+              setStoreMeta({});
+            }
           }
         }
       }
@@ -1047,7 +1326,7 @@ export default function PhotoListScreen() {
         presentationStyle="fullScreen"
       >
         <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-          <View style={[styles.previewHeader, { paddingTop: 10 }]}>
+          <View style={[styles.previewHeader, { paddingTop: topPad + 10 }]}>
             <View style={{ flex: 1 }}>
               <Text style={styles.previewTitleOneLine} numberOfLines={1}>
                 {previewTitle}
@@ -1122,7 +1401,16 @@ export default function PhotoListScreen() {
                       <Text style={{ color: THEME.subtext, fontWeight: "700" }}>사진 없이 저장된 미오출입니다.</Text>
                     </View>
                   ) : (
-                    <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
+                    <Pressable onPress={() => {
+                      setLightboxIndex(previewItems.filter((p) => !String(p.original_url).startsWith("meta://")).indexOf(item));
+                      setLightboxOpen(true);
+                    }}>
+                      <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
+                      <View style={styles.zoomHint}>
+                        <Ionicons name="expand-outline" size={14} color="#fff" />
+                        <Text style={styles.zoomHintText}>눌러서 전체화면</Text>
+                      </View>
+                    </Pressable>
                   )}
                 </View>
               );
@@ -1132,6 +1420,14 @@ export default function PhotoListScreen() {
                 <Text style={{ color: THEME.subtext }}>미리보기 데이터가 없습니다.</Text>
               </View>
             }
+          />
+
+          <LightboxModal
+            visible={lightboxOpen}
+            items={previewItems.filter((p) => !String(p.original_url).startsWith("meta://"))}
+            initialIndex={lightboxIndex}
+            onClose={() => setLightboxOpen(false)}
+            storeMeta={storeMeta}
           />
         </SafeAreaView>
       </Modal>
@@ -1526,6 +1822,19 @@ const styles = StyleSheet.create({
   smallDangerText: { fontWeight: "950" as any, color: THEME.danger, fontSize: 12 },
 
   previewImage: { width: "100%", aspectRatio: 4 / 3, borderRadius: 16, backgroundColor: "#F3F4F6" },
+  zoomHint: {
+    position: "absolute",
+    bottom: 8,
+    right: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  zoomHintText: { color: "#fff", fontSize: 11, fontWeight: "700" },
 
   modalBox: {
     position: "absolute",

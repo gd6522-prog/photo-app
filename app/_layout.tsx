@@ -2,8 +2,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useRef, useState } from "react";
 import { Stack, useRootNavigationState, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { LogBox } from "react-native";
+import { LogBox, Text, TextInput } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider, useAuth } from "../src/lib/auth";
+
+// 시스템 글꼴 크기 설정에 영향받지 않도록 전역 적용
+(Text as any).defaultProps = { ...(Text as any).defaultProps, allowFontScaling: false };
+(TextInput as any).defaultProps = { ...(TextInput as any).defaultProps, allowFontScaling: false };
 
 const POST_SIGNUP_LOGIN_KEY = "hx_post_signup_login_redirect";
 
@@ -96,8 +101,10 @@ function AuthGate() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <AuthGate />
-    </AuthProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }

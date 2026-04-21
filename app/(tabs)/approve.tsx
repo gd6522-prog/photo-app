@@ -4,6 +4,8 @@ import { useRouter } from "expo-router";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { fetchPendingApprovals, fetchPendingLabels, isAdminUser, PendingApprovalRow } from "../../src/lib/admin";
 
+type ApprovedRow = { id: string; name: string | null; phone: string | null; device_id: string | null };
+
 type Row = PendingApprovalRow;
 
 function inferPendingLabel(row: Partial<Row>) {
@@ -15,9 +17,12 @@ function inferPendingLabel(row: Partial<Row>) {
 
 export default function ApproveScreen() {
   const router = useRouter();
+  const [tab, setTab] = useState<"approve" | "device">("approve");
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  const [approvedRows, setApprovedRows] = useState<ApprovedRow[]>([]);
+  const [deviceLoading, setDeviceLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -113,6 +118,46 @@ export default function ApproveScreen() {
     if (!res.ok) throw new Error((payload as any)?.error || "잠금 초기화 실패");
   }, []);
 
+  const loadApprovedUsers = useCallback(async () => {
+    setDeviceLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, name, phone, device_id")
+        .eq("approval_status", "approved")
+        .order("name", { ascending: true });
+      if (error) throw error;
+      setApprovedRows((data ?? []) as ApprovedRow[]);
+    } catch (e: any) {
+      Alert.alert("오류", e?.message ?? "불러오기 실패");
+    } finally {
+      setDeviceLoading(false);
+    }
+  }, []);
+
+  const resetDeviceId = useCallback(async (userId: string, userName: string) => {
+    Alert.alert("기기 초기화", `${userName || "이 사용자"}의 기기 등록을 초기화할까요?\n초기화하면 어느 기기에서든 다시 로그인할 수 있습니다.`, [
+      { text: "취소", style: "cancel" },
+      {
+        text: "초기화",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const { error } = await supabase
+              .from("profiles")
+              .update({ device_id: null })
+              .eq("id", userId);
+            if (error) throw error;
+            setApprovedRows((prev) => prev.map((r) => r.id === userId ? { ...r, device_id: null } : r));
+            Alert.alert("완료", "기기 초기화가 완료되었습니다.");
+          } catch (e: any) {
+            Alert.alert("실패", e?.message ?? "초기화 실패");
+          }
+        },
+      },
+    ]);
+  }, []);
+
   const setStatus = useCallback(
     async (userId: string, status: "approved" | "rejected") => {
       try {
@@ -144,27 +189,71 @@ export default function ApproveScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
       <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 12 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <View style={{ gap: 4 }}>
-            <Text style={{ fontSize: 22, fontWeight: "900", color: "#111827" }}>가입 승인</Text>
-            <Text style={{ color: "#6B7280" }}>승인 대기: {pendingCount}명</Text>
-          </View>
-
+          <Text style={{ fontSize: 22, fontWeight: "900", color: "#111827" }}>관리자</Text>
           <Pressable
-            onPress={load}
-            style={{
-              paddingVertical: 10,
-              paddingHorizontal: 14,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: "#E5E7EB",
-              backgroundColor: "#fff",
-            }}
+            onPress={() => { if (tab === "approve") load(); else loadApprovedUsers(); }}
+            style={{ paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, borderColor: "#E5E7EB", backgroundColor: "#fff" }}
           >
             <Text style={{ fontWeight: "900", color: "#111827" }}>새로고침</Text>
           </Pressable>
         </View>
 
-        {loading ? (
+        {/* 탭 */}
+        <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+          <Pressable
+            onPress={() => setTab("approve")}
+            style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: tab === "approve" ? "#2563EB" : "#E5E7EB", backgroundColor: tab === "approve" ? "#EFF6FF" : "#fff" }}
+          >
+            <Text style={{ fontWeight: "900", color: tab === "approve" ? "#2563EB" : "#374151" }}>가입 승인 {pendingCount > 0 ? `(${pendingCount})` : ""}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setTab("device"); if (approvedRows.length === 0) loadApprovedUsers(); }}
+            style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: tab === "device" ? "#2563EB" : "#E5E7EB", backgroundColor: tab === "device" ? "#EFF6FF" : "#fff" }}
+          >
+            <Text style={{ fontWeight: "900", color: tab === "device" ? "#2563EB" : "#374151" }}>기기 초기화</Text>
+          </Pressable>
+        </View>
+
+        {tab === "device" ? (
+          deviceLoading ? (
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+              <ActivityIndicator />
+            </View>
+          ) : (
+            <FlatList
+              data={approvedRows}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ paddingBottom: 30 }}
+              ListEmptyComponent={<View style={{ padding: 16 }}><Text style={{ color: "#6B7280" }}>승인된 사용자가 없습니다.</Text></View>}
+              renderItem={({ item }) => (
+                <View style={{ backgroundColor: "#fff", borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "#E5E7EB", flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  <View style={{ flex: 1, gap: 3 }}>
+                    <Text style={{ fontWeight: "900", color: "#111827" }}>{item.name?.trim() || "이름없음"}</Text>
+                    <Text style={{ color: "#6B7280", fontSize: 13 }}>{item.phone ?? "-"}</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: item.device_id ? "#16A34A" : "#9CA3AF" }} />
+                      <Text style={{ fontSize: 12, color: item.device_id ? "#16A34A" : "#9CA3AF", fontWeight: "800" }}>
+                        {item.device_id ? "기기 등록됨" : "미등록 (어느 기기든 로그인 가능)"}
+                      </Text>
+                    </View>
+                  </View>
+                  {item.device_id ? (
+                    <Pressable
+                      onPress={() => resetDeviceId(item.id, item.name ?? "")}
+                      style={{ paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: "#FCA5A5", backgroundColor: "#FEF2F2" }}
+                    >
+                      <Text style={{ fontWeight: "900", color: "#EF4444", fontSize: 13 }}>초기화</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={{ paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: "#E5E7EB", backgroundColor: "#F9FAFB" }}>
+                      <Text style={{ fontWeight: "900", color: "#9CA3AF", fontSize: 13 }}>미등록</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            />
+          )
+        ) : loading ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator />
             <Text style={{ marginTop: 10, color: "#6B7280" }}>불러오는 중...</Text>

@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getOrCreateDeviceId } from "../../src/lib/deviceId";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -321,6 +322,23 @@ export default function LoginScreen() {
         Alert.alert("승인 대기", "관리자 승인 후 로그인할 수 있습니다.");
         return;
       }
+
+      // 기기 1대 제한 체크
+      const deviceId = await getOrCreateDeviceId();
+      const { data: devProf } = await supabase
+        .from("profiles")
+        .select("device_id")
+        .eq("id", data.user.id)
+        .single();
+
+      if (devProf?.device_id && devProf.device_id !== deviceId) {
+        await supabase.auth.signOut();
+        Alert.alert("로그인 불가", "이 계정은 다른 기기에서 이미 사용 중입니다.\n기기를 변경하려면 관리자에게 문의하세요.");
+        return;
+      }
+
+      // 기기 등록 (신규 or 동일 기기 갱신)
+      await supabase.from("profiles").update({ device_id: deviceId }).eq("id", data.user.id);
 
       try {
         await AsyncStorage.removeItem(POST_SIGNUP_LOGIN_KEY);

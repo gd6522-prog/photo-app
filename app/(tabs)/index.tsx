@@ -47,8 +47,8 @@ const THEME = {
   soft: "#F9FAFB",
 
   orange: "#FF6A00",
-  orangeSoft: "rgba(255,106,0,0.10)",
-  orangeBorder: "rgba(255,106,0,0.35)",
+  orangeSoft: "#FFF1E6",
+  orangeBorder: "#FFD4B0",
 
   primary: "#111827",
   success: "#16A34A",
@@ -62,7 +62,7 @@ const MAX_DISTANCE_M = 250;
 const WEEKDAYS_KO = ["일", "월", "화", "수", "목", "금", "토"] as const;
 
 const ALLOW_FALLBACK_CLOCK = false;
-const GPS_TOTAL_TIMEOUT_MS = 25000;
+const GPS_TOTAL_TIMEOUT_MS = 22000;
 const PUSH_NOTIFY_TIMEOUT_MS = 12000;
 const PUSH_NOTIFY_MAX_ATTEMPTS = 3;
 const TEMP_DAILY_WORK_PARTS = ["박스존", "이너존", "슬라존", "경량존", "이형존", "담배존"] as const;
@@ -354,27 +354,33 @@ async function getPositionByWatching(ms: number, accuracy: Location.LocationAccu
 async function getReliablePositionForPhoneTotalTimeout() {
   return await withTimeout(
     (async () => {
+      // 1단계: 5분 이내 캐시 위치 즉시 반환 (수백ms)
       try {
-        const last = await withTimeout(Location.getLastKnownPositionAsync(), 2500, "마지막 위치");
-        if (last) return { pos: last, source: "last_known" as const };
-      } catch {}
-
-      try {
-        const p = await withTimeout(
-          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest }),
-          8000,
-          "현재 위치(낮은 정확도)"
+        const last = await withTimeout(
+          Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000, requiredAccuracy: 300 }),
+          1500,
+          "캐시 위치"
         );
-        return { pos: p, source: "current_lowest" as const };
+        if (last?.coords) return { pos: last, source: "last_known" as const };
       } catch {}
 
-      try {
-        const p = await getPositionByWatching(9000, Location.Accuracy.Balanced);
-        return { pos: p, source: "watch_balanced" as const };
-      } catch {}
+      // 2단계: 여러 방법 병렬 시도 → 가장 먼저 성공한 것 사용
+      const toResult = <S extends string>(source: S) =>
+        (pos: Location.LocationObject) => ({ pos, source } as const);
 
-      const p = await getPositionByWatching(9000, Location.Accuracy.High);
-      return { pos: p, source: "watch_high" as const };
+      const winner = await Promise.any([
+        // 저정밀도 즉시 측위 (보통 1~3초)
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest })
+          .then(toResult("current_lowest")),
+        // 균형 정확도 워치 (위보다 느리지만 실내에서 더 잘 잡힘)
+        getPositionByWatching(12000, Location.Accuracy.Balanced)
+          .then(toResult("watch_balanced")),
+        // 고정밀도 워치 (최후 수단)
+        getPositionByWatching(18000, Location.Accuracy.High)
+          .then(toResult("watch_high")),
+      ]);
+
+      return winner;
     })(),
     GPS_TOTAL_TIMEOUT_MS,
     "GPS 전체"
@@ -431,8 +437,12 @@ export default function MainMenu() {
   const { user } = useAuth();
 
   const insets = useSafeAreaInsets();
-  const topPad = Math.max(insets.top, 12) + 8;
-  const bottomPad = Math.max(insets.bottom, 10) + 10;
+  const topPad = Platform.OS === "android"
+    ? Math.max(insets.top, 40)
+    : Math.max(insets.top, 12);
+  const bottomPad = Platform.OS === "android"
+    ? Math.max(insets.bottom, 24) + 40
+    : Math.max(insets.bottom, 10) + 10;
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
@@ -443,10 +453,13 @@ export default function MainMenu() {
   const [workPart, setWorkPart] = useState<string>("");
   const [todayTempWorkPart, setTodayTempWorkPart] = useState<string>("");
 
+  const [hazardMenuOpen, setHazardMenuOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportPhotos, setReportPhotos] = useState<string[]>([]);
   const [reportComment, setReportComment] = useState<string>("");
   const [reportUploading, setReportUploading] = useState(false);
+  const [reportKeyboardHeight, setReportKeyboardHeight] = useState(0);
+  const reportScrollRef = useRef<any>(null);
 
   const [attLoading, setAttLoading] = useState(false);
   const [att, setAtt] = useState<AttendanceRow | null>(null);
@@ -458,6 +471,7 @@ export default function MainMenu() {
   const [selectedTempDailyPart, setSelectedTempDailyPart] = useState<string>("");
 
   // 기사 호차 관련
+  const [myUserId, setMyUserId] = useState<string | null>(null);
   const [myCarNo, setMyCarNo] = useState<string | null>(null);
   const [carGroups, setCarGroups] = useState<CarGroup[]>([]);
   const [supportDrivers, setSupportDrivers] = useState<DriverProfile[]>([]);
@@ -554,6 +568,7 @@ export default function MainMenu() {
       const profCarNo = ((profRes as any).data?.car_no ?? "").trim() || null;
       setWorkPart(profWorkPart);
       setMyCarNo(profCarNo);
+      setMyUserId(u.id);
       if (profWorkPart === "임시직") {
         try {
           setTodayTempWorkPart(await getTodayTempWorkPart(u.id));
@@ -724,6 +739,14 @@ export default function MainMenu() {
   useEffect(() => {
     if (isDriverUser) loadCarData(selectedWorkDate);
   }, [selectedWorkDate, isDriverUser, loadCarData]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    if (!reportOpen) { setReportKeyboardHeight(0); return; }
+    const show = Keyboard.addListener("keyboardDidShow", (e) => setReportKeyboardHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener("keyboardDidHide", () => setReportKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, [reportOpen]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1021,6 +1044,15 @@ export default function MainMenu() {
           };
         }
         Alert.alert("위치 실패", "GPS를 가져오지 못했습니다. 창가/야외로 이동 후 다시 시도해주세요.");
+        return null;
+      }
+
+      // GPS 조작(Mock Location) 감지 — Android 전용
+      if ((result.pos as any).mocked === true) {
+        Alert.alert(
+          "GPS 조작 감지",
+          "위치 조작 앱 사용이 감지되었습니다.\nGPS 조작 앱을 끄고 다시 시도해주세요."
+        );
         return null;
       }
 
@@ -1386,11 +1418,11 @@ export default function MainMenu() {
 
   // 내 호차 자동 선택
   useEffect(() => {
-    if (isDriverUser && myCarNo && selectedCarNo === null && carGroups.length > 0) {
-      const found = carGroups.find((g) => g.car_no === myCarNo);
-      if (found) setSelectedCarNo(myCarNo);
+    if (isDriverUser && myCarNo && selectedCarNo === null) {
+      const myNums = myCarNo.match(/\d+/g)?.filter((n) => n.length >= 2) ?? [];
+      if (myNums.length > 0) setSelectedCarNo(myNums[0]);
     }
-  }, [isDriverUser, myCarNo, carGroups, selectedCarNo]);
+  }, [isDriverUser, myCarNo, selectedCarNo]);
   const isTemporaryWorker = useMemo(() => workPart === "임시직", [workPart]);
   const activeWorkPart = useMemo(
     () => (isTemporaryWorker ? (todayTempWorkPart || "").trim() : (workPart || "").trim()),
@@ -1459,294 +1491,385 @@ export default function MainMenu() {
     );
   };
 
+  // 출퇴근 상태 계산
+  const attStatusInfo = (() => {
+    if (isDriverUser && selectedCarNo && selectedCarNo !== "지원") {
+      const group = carGroups.find((g) => g.car_no === selectedCarNo || (g.car_no.match(/\d+/g) ?? []).includes(selectedCarNo));
+      if (group) {
+        const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
+        const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
+        if (allOut) return { label: "출차 완료", color: THEME.subtext, bg: THEME.soft };
+        if (allIn) return { label: "입차 중", color: "#16A34A", bg: "#ECFDF3" };
+        return { label: "미입차", color: THEME.muted, bg: THEME.bg };
+      }
+    }
+    if (att?.clock_out_at) return { label: isDriverUser ? "출차 완료" : "퇴근 완료", color: THEME.subtext, bg: THEME.soft };
+    if (att?.clock_in_at) return { label: isDriverUser ? "입차 중" : "출근 중", color: "#16A34A", bg: "#ECFDF3" };
+    return { label: isDriverUser ? "미입차" : "미출근", color: THEME.muted, bg: THEME.bg };
+  })();
+
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
         bounces={false}
         alwaysBounceVertical={false}
-        scrollEnabled={true}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.scrollContent, { paddingTop: topPad, paddingBottom: bottomPad }]}
+        contentContainerStyle={{ paddingBottom: bottomPad }}
       >
-        <Pressable onPress={() => Keyboard.dismiss()} style={{ gap: 14 }}>
-          <View style={styles.header}>
-            <Image source={require("../../assets/hanexpress-logo.png")} style={styles.logo} />
-            <Text style={styles.h1}>{greetingLine}</Text>
+        <Pressable onPress={() => Keyboard.dismiss()}>
+
+          {/* ── 상단 헤더 배너 ── */}
+          <View style={[styles.heroBanner, { paddingTop: topPad + (Platform.OS === "ios" ? 4 : 8) }]}>
+            <Image source={require("../../assets/hanexpress-logo.png")} style={styles.heroLogo} />
+            <View style={styles.heroBottom}>
+              <View style={{ flex: 1 }}>
+                {displayName
+                  ? <><Text style={styles.heroName} numberOfLines={1}>{displayName}님</Text><Text style={styles.heroGreeting} numberOfLines={1}>오늘도 안전한 작업 부탁드립니다.</Text></>
+                  : <Text style={styles.heroGreeting} numberOfLines={1}>오늘도 안전한 작업 부탁드립니다.</Text>
+                }
+                <Text style={styles.heroDate}>{selectedDateLabel}</Text>
+              </View>
+              {activeWorkPart ? (
+                <View style={styles.workPartChip}>
+                  <Text style={styles.workPartChipText}>{activeWorkPart}</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
 
-          <View style={styles.card}>
-            <View style={styles.cardTitleRow}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <MaterialCommunityIcons name="clock-outline" size={18} color={THEME.text} />
-                <Text style={styles.cardTitle}>{isDriverUser ? "입출차" : "출퇴근"}</Text>
+          <View style={styles.mainContent}>
+
+            {/* ── 출퇴근 카드 ── */}
+            <View style={styles.attCard}>
+              {/* 카드 헤더 */}
+              <View style={styles.attCardHeader}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <View style={styles.attCardIconWrap}>
+                    <MaterialCommunityIcons name={isDriverUser ? "truck-outline" : "clock-outline"} size={16} color="#fff" />
+                  </View>
+                  <Text style={styles.attCardTitle}>{isDriverUser ? "입출차 관리" : "출퇴근 관리"}</Text>
+                </View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <View style={[styles.attStatusChip, { backgroundColor: attStatusInfo.bg }]}>
+                    <Text style={[styles.attStatusText, { color: attStatusInfo.color }]}>{attStatusInfo.label}</Text>
+                  </View>
+                  {isDriverUser && (
+                    <Pressable onPress={() => setCarPickerOpen(true)} disabled={carBusy} style={styles.carPill}>
+                      <MaterialCommunityIcons name="truck-outline" size={13} color={THEME.subtext} />
+                      <Text style={styles.carPillText}>
+                        {selectedCarNo === "지원" ? "지원" : selectedCarNo ? `${selectedCarNo}호` : "호차"}
+                      </Text>
+                      <Ionicons name="chevron-down" size={11} color={THEME.muted} />
+                    </Pressable>
+                  )}
+                </View>
               </View>
-              {isDriverUser && (
-                <Pressable
-                  onPress={() => setCarPickerOpen(true)}
-                  disabled={carBusy}
-                  style={styles.carSelectPill}
-                >
-                  <MaterialCommunityIcons name="truck-outline" size={14} color={THEME.subtext} />
-                  <Text style={styles.carSelectPillText}>
-                    {selectedCarNo === "지원" ? "지원" : selectedCarNo ? `${selectedCarNo}호` : "호차 선택"}
-                  </Text>
-                  <Ionicons name="chevron-down" size={12} color={THEME.subtext} />
+
+              {/* 날짜 네비게이션 */}
+              <View style={styles.dateNav}>
+                <Pressable onPress={() => setSelectedWorkDate((p) => shiftYmd(p, -1))} disabled={busy || carBusy} style={[styles.dateNavArrow, (busy || carBusy) && { opacity: 0.4 }]}>
+                  <Ionicons name="chevron-back" size={20} color={THEME.subtext} />
                 </Pressable>
+                <Text style={styles.dateNavText}>{selectedDateLabel}</Text>
+                <Pressable onPress={() => setSelectedWorkDate((p) => shiftYmd(p, +1))} disabled={busy || carBusy || !canGoNextDay} style={[styles.dateNavArrow, (busy || carBusy || !canGoNextDay) && { opacity: 0.4 }]}>
+                  <Ionicons name="chevron-forward" size={20} color={THEME.subtext} />
+                </Pressable>
+              </View>
+
+              {/* 기사: 호차 기사 목록 */}
+              {isDriverUser && selectedCarNo && selectedCarNo !== "지원" && (() => {
+                const group = carGroups.find((g) => g.car_no === selectedCarNo || (g.car_no.match(/\d+/g) ?? []).includes(selectedCarNo));
+                if (!group) return null;
+                return (
+                  <View style={styles.driverList}>
+                    {group.drivers.map((driver) => {
+                      const sh = carShifts[driver.id];
+                      return (
+                        <View key={driver.id} style={styles.driverRow}>
+                          <View style={styles.driverAvatar}>
+                            <Text style={styles.driverAvatarText}>{driver.name.charAt(0)}</Text>
+                          </View>
+                          <Text style={styles.driverName}>{driver.name}</Text>
+                          <View style={{ flex: 1 }} />
+                          <Text style={styles.driverTime}>입 {sh?.clock_in_at ? formatKSTTime(sh.clock_in_at) : "--:--"}</Text>
+                          <Text style={styles.driverTimeSep}>/</Text>
+                          <Text style={styles.driverTime}>출 {sh?.clock_out_at ? formatKSTTime(sh.clock_out_at) : "--:--"}</Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
+
+              {/* 기사: 지원 목록 */}
+              {isDriverUser && selectedCarNo === "지원" && (
+                <View style={styles.driverList}>
+                  {supportDrivers.length === 0 ? (
+                    <Text style={styles.helper}>등록된 지원 기사가 없습니다.</Text>
+                  ) : (
+                    supportDrivers.map((driver) => {
+                      const sh = carShifts[driver.id];
+                      return (
+                        <View key={driver.id} style={styles.driverRow}>
+                          <View style={styles.driverAvatar}>
+                            <Text style={styles.driverAvatarText}>{driver.name.charAt(0)}</Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.driverName}>{driver.name}</Text>
+                            <Text style={styles.helper}>{sh?.clock_in_at ? `입차 ${formatKSTTime(sh.clock_in_at)}` : "미입차"}</Text>
+                          </View>
+                          {!sh?.clock_in_at && (
+                            <Pressable onPress={() => { setSupportSelectedDriver(driver); setSupportStoreQuery(""); setSupportStoreResults([]); setSupportStoreModalOpen(true); }} disabled={carBusy} style={[styles.supportBtn, carBusy && { opacity: 0.5 }]}>
+                              <Text style={styles.supportBtnText}>점포 지정</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      );
+                    })
+                  )}
+                </View>
+              )}
+
+              {/* 입차/출차 버튼 */}
+              {(() => {
+                const mkInBtn = (onPress: () => void, disabled: boolean, doneTime: string | null | undefined, label: string) => (
+                  <Pressable onPress={onPress} disabled={disabled} style={[styles.punchBtn, doneTime ? styles.punchBtnDone : styles.punchBtnIn, disabled && !doneTime && { opacity: 0.5 }]}>
+                    {doneTime
+                      ? <><Text style={styles.punchBtnLabel}>{label === clockInLabel ? (isDriverUser ? "입차" : "출근") : (isDriverUser ? "출차" : "퇴근")}</Text><Text style={styles.punchBtnTime}>{formatKSTTime(doneTime)}</Text></>
+                      : <><MaterialCommunityIcons name="login" size={20} color="#15803D" /><Text style={styles.punchBtnIdle}>{label}</Text></>
+                    }
+                  </Pressable>
+                );
+                const mkOutBtn = (onPress: () => void, disabled: boolean, doneTime: string | null | undefined, label: string) => (
+                  <Pressable onPress={onPress} disabled={disabled} style={[styles.punchBtn, doneTime ? styles.punchBtnDone : styles.punchBtnOut, disabled && !doneTime && { opacity: 0.5 }]}>
+                    {doneTime
+                      ? <><Text style={styles.punchBtnLabel}>{label === clockOutLabel ? (isDriverUser ? "출차" : "퇴근") : (isDriverUser ? "출차" : "퇴근")}</Text><Text style={styles.punchBtnTime}>{formatKSTTime(doneTime)}</Text></>
+                      : <><MaterialCommunityIcons name="logout" size={20} color="#1D4ED8" /><Text style={styles.punchBtnIdle}>{label}</Text></>
+                    }
+                  </Pressable>
+                );
+
+                if (isDriverUser && selectedCarNo && selectedCarNo !== "지원") {
+                  const group = carGroups.find((g) => g.car_no === selectedCarNo || (g.car_no.match(/\d+/g) ?? []).includes(selectedCarNo));
+                  if (!group) {
+                    return (
+                      <View style={styles.punchRow}>
+                        {mkInBtn(onClockIn, busy || !isViewingToday || !!att?.clock_in_at, att?.clock_in_at, clockInLabel)}
+                        {mkOutBtn(onClockOut, busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at, att?.clock_out_at, clockOutLabel)}
+                      </View>
+                    );
+                  }
+                  const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
+                  const anyIn = group.drivers.some((d) => !!carShifts[d.id]?.clock_in_at);
+                  const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
+                  const firstInTime = group.drivers.find((d) => carShifts[d.id]?.clock_in_at)?.id;
+                  const firstOutTime = group.drivers.find((d) => carShifts[d.id]?.clock_out_at)?.id;
+                  return (
+                    <View style={styles.punchRow}>
+                      {mkInBtn(() => doCarClockIn(group, selectedWorkDate), carBusy || allIn, allIn ? (firstInTime ? carShifts[firstInTime]?.clock_in_at : null) : null, "입차")}
+                      {mkOutBtn(() => doCarClockOut(group, selectedWorkDate), carBusy || !anyIn || allOut, allOut ? (firstOutTime ? carShifts[firstOutTime]?.clock_out_at : null) : null, "출차")}
+                    </View>
+                  );
+                }
+                return (
+                  <View style={styles.punchRow}>
+                    {mkInBtn(onClockIn, busy || !isViewingToday || !!att?.clock_in_at, att?.clock_in_at, clockInLabel)}
+                    {mkOutBtn(onClockOut, busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at, att?.clock_out_at, clockOutLabel)}
+                  </View>
+                );
+              })()}
+
+              {(attLoading || (isDriverUser && carLoading)) && (
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingTop: 4 }}>
+                  <ActivityIndicator size="small" color={THEME.muted} />
+                  <Text style={styles.helper}>{isDriverUser ? "호차 정보 불러오는 중..." : "출퇴근 정보 불러오는 중..."}</Text>
+                </View>
               )}
             </View>
 
-            <View style={styles.attDateNav}>
-              <Pressable
-                onPress={() => setSelectedWorkDate((p) => shiftYmd(p, -1))}
-                disabled={busy || carBusy}
-                style={[styles.attDateArrowBtn, (busy || carBusy) && styles.btnDisabled]}
-              >
-                <Ionicons name="chevron-back" size={22} color={THEME.subtext} />
+            {/* ── 가입 승인 (관리자) ── */}
+            {approveRowVisible && (
+              <Pressable onPress={() => router.push("/(tabs)/approve")} disabled={busy} style={[styles.approveCard, busy && { opacity: 0.6 }]}>
+                <View style={styles.approveCardLeft}>
+                  <View style={styles.approveCardIcon}>
+                    <Ionicons name="shield-checkmark" size={18} color="#fff" />
+                  </View>
+                  <View>
+                    <Text style={styles.approveCardTitle}>가입 승인 관리</Text>
+                    <Text style={styles.approveCardSub}>승인 대기 인원 확인</Text>
+                  </View>
+                </View>
+                <View style={[styles.approveCardBadge, pendingCount > 0 ? styles.approveCardBadgeHot : styles.approveCardBadgeIdle]}>
+                  <Text style={[styles.approveCardBadgeText, pendingCount > 0 && { color: "#fff" }]}>{pendingCount}</Text>
+                </View>
               </Pressable>
-              <Text style={styles.attDateText}>{selectedDateLabel}</Text>
-              <Pressable
-                onPress={() => setSelectedWorkDate((p) => shiftYmd(p, +1))}
-                disabled={busy || carBusy || !canGoNextDay}
-                style={[styles.attDateArrowBtn, (busy || carBusy || !canGoNextDay) && styles.btnDisabled]}
-              >
-                <Ionicons name="chevron-forward" size={22} color={THEME.subtext} />
+            )}
+
+            {/* ── 기능 버튼 그리드 ── */}
+            <View style={styles.actionGrid}>
+              <Pressable onPress={goUpload} disabled={busy} style={[styles.actionCell, styles.actionCellPrimary, busy && { opacity: 0.6 }]}>
+                <View style={[styles.actionCellIconWrap, { backgroundColor: "rgba(255,255,255,0.2)" }]}>
+                  <Ionicons name="cloud-upload-outline" size={24} color="#fff" />
+                </View>
+                <Text style={[styles.actionCellTitle, { color: "#fff" }]}>업로드</Text>
+                <Text style={[styles.actionCellSub, { color: "rgba(255,255,255,0.75)" }]}>사진 업로드</Text>
+              </Pressable>
+
+              <Pressable onPress={goList} disabled={busy} style={[styles.actionCell, styles.actionCellOutline, busy && { opacity: 0.6 }]}>
+                <View style={[styles.actionCellIconWrap, { backgroundColor: THEME.soft }]}>
+                  <Ionicons name="search-outline" size={24} color={THEME.text} />
+                </View>
+                <Text style={styles.actionCellTitle}>조회</Text>
+                <Text style={styles.actionCellSub}>사진 조회</Text>
+              </Pressable>
+
+              <Pressable onPress={() => setHazardMenuOpen(true)} disabled={busy} style={[styles.actionCell, styles.actionCellOrange, busy && { opacity: 0.6 }]}>
+                <View style={[styles.actionCellIconWrap, { backgroundColor: "rgba(255,106,0,0.15)" }]}>
+                  <MaterialCommunityIcons name="alert-circle-outline" size={24} color={THEME.orange} />
+                </View>
+                <Text style={[styles.actionCellTitle, { color: THEME.orange }]}>위험요인</Text>
+                <Text style={[styles.actionCellSub, { color: "rgba(255,106,0,0.65)" }]}>제보 · 내역</Text>
+              </Pressable>
+
+              <Pressable onPress={onLogout} disabled={busy} style={[styles.actionCell, styles.actionCellDanger, busy && { opacity: 0.6 }]}>
+                <View style={[styles.actionCellIconWrap, { backgroundColor: "#FEF2F2" }]}>
+                  <Ionicons name="log-out-outline" size={24} color="#DC2626" />
+                </View>
+                <Text style={[styles.actionCellTitle, { color: "#DC2626" }]}>로그아웃</Text>
+                <Text style={[styles.actionCellSub, { color: "#DC2626", opacity: 0.6 }]}>계정 로그아웃</Text>
               </Pressable>
             </View>
 
-            {/* 기사 전용: 선택된 호차 기사 목록 */}
-            {isDriverUser && selectedCarNo && selectedCarNo !== "지원" && (() => {
-              const group = carGroups.find((g) => g.car_no === selectedCarNo);
-              if (!group) return null;
-              return group.drivers.map((driver) => {
-                const sh = carShifts[driver.id];
-                return (
-                  <View key={driver.id} style={styles.driverRow}>
-                    <Text style={styles.driverName}>{driver.name}</Text>
-                    <Text style={styles.driverShiftInfo}>
-                      입차 {sh?.clock_in_at ? formatKSTTime(sh.clock_in_at) : "-"} / 출차 {sh?.clock_out_at ? formatKSTTime(sh.clock_out_at) : "-"}
-                    </Text>
-                  </View>
-                );
-              });
-            })()}
-
-            {/* 기사 전용: 지원 목록 */}
-            {isDriverUser && selectedCarNo === "지원" && (
-              <View style={{ gap: 6 }}>
-                {supportDrivers.length === 0 ? (
-                  <Text style={styles.helper}>등록된 지원 기사가 없습니다.</Text>
-                ) : (
-                  supportDrivers.map((driver) => {
-                    const sh = carShifts[driver.id];
-                    return (
-                      <View key={driver.id} style={styles.driverRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.driverName}>{driver.name}</Text>
-                          <Text style={styles.driverShiftInfo}>
-                            {sh?.clock_in_at ? `입차 ${formatKSTTime(sh.clock_in_at)}` : "미입차"}
-                          </Text>
-                        </View>
-                        {!sh?.clock_in_at && (
-                          <Pressable
-                            onPress={() => {
-                              setSupportSelectedDriver(driver);
-                              setSupportStoreQuery("");
-                              setSupportStoreResults([]);
-                              setSupportStoreModalOpen(true);
-                            }}
-                            disabled={carBusy}
-                            style={[styles.supportClockInBtn, carBusy && styles.btnDisabled]}
-                          >
-                            <Text style={styles.supportClockInBtnText}>점포 지정</Text>
-                          </Pressable>
-                        )}
-                      </View>
-                    );
-                  })
-                )}
-              </View>
-            )}
-
-            {/* 입차/출차 버튼: 기사-호차선택됨 / 기사-미선택(개인) / 일반직원 */}
-            {(() => {
-              if (isDriverUser && selectedCarNo && selectedCarNo !== "지원") {
-                const group = carGroups.find((g) => g.car_no === selectedCarNo);
-                if (!group) return null;
-                const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
-                const anyIn = group.drivers.some((d) => !!carShifts[d.id]?.clock_in_at);
-                const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
-                return (
-                  <View style={styles.attPunchRow}>
-                    <Pressable
-                      onPress={() => doCarClockIn(group, selectedWorkDate)}
-                      disabled={carBusy || allIn}
-                      style={[styles.attPunchBtn, allIn ? styles.attPunchBtnDone : styles.attPunchBtnIn, (carBusy || allIn) && styles.btnDisabled]}
-                    >
-                      <View style={styles.btnInner}>
-                        <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
-                        <Text style={allIn ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                          {allIn ? "입차됨" : "입차"}
-                        </Text>
-                      </View>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => doCarClockOut(group, selectedWorkDate)}
-                      disabled={carBusy || !anyIn || allOut}
-                      style={[styles.attPunchBtn, allOut ? styles.attPunchBtnDone : styles.attPunchBtnOut, (carBusy || !anyIn || allOut) && styles.btnDisabled]}
-                    >
-                      <View style={styles.btnInner}>
-                        <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
-                        <Text style={allOut ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                          {allOut ? "출차됨" : "출차"}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  </View>
-                );
-              }
-              // 기사 호차 미선택 OR 일반 직원: 개인 입차/출차 버튼
-              return (
-                <View style={styles.attPunchRow}>
-                  <Pressable
-                    onPress={onClockIn}
-                    disabled={busy || !isViewingToday || !!att?.clock_in_at}
-                    style={[
-                      styles.attPunchBtn,
-                      att?.clock_in_at ? styles.attPunchBtnDone : styles.attPunchBtnIn,
-                      (busy || !isViewingToday) && !att?.clock_in_at && styles.btnDisabled,
-                    ]}
-                  >
-                    <View style={styles.btnInner}>
-                      <MaterialCommunityIcons name="calendar-check-outline" size={19} color="#4B5563" />
-                      <Text style={att?.clock_in_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                        {att?.clock_in_at ? formatKSTTime(att.clock_in_at) : clockInLabel}
-                      </Text>
-                    </View>
-                  </Pressable>
-                  <Pressable
-                    onPress={onClockOut}
-                    disabled={busy || !isViewingToday || !att?.clock_in_at || !!att?.clock_out_at}
-                    style={[
-                      styles.attPunchBtn,
-                      att?.clock_out_at ? styles.attPunchBtnDone : styles.attPunchBtnOut,
-                      (busy || !isViewingToday || !att?.clock_in_at) && !att?.clock_out_at && styles.btnDisabled,
-                    ]}
-                  >
-                    <View style={styles.btnInner}>
-                      <MaterialCommunityIcons name="logout" size={19} color="#4B5563" />
-                      <Text style={att?.clock_out_at ? styles.attPunchTimeText : styles.attPunchIdleText}>
-                        {att?.clock_out_at ? formatKSTTime(att.clock_out_at) : clockOutLabel}
-                      </Text>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            })()}
-
-            {(attLoading || (isDriverUser && carLoading)) ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" />
-                <Text style={styles.loadingText}>
-                  {isDriverUser ? "호차 정보 불러오는 중..." : "출퇴근 정보 불러오는 중..."}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          <View style={styles.card}>
-            {approveRowVisible ? (
-              <Pressable
-                onPress={() => router.push("/(tabs)/approve")}
-                disabled={busy}
-                style={[styles.approveRow, busy && styles.btnDisabled]}
-              >
-                <View style={{ gap: 2 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Ionicons name="shield-checkmark-outline" size={18} color={THEME.text} />
-                    <Text style={styles.cardTitle}>가입 승인</Text>
-                  </View>
-                  <Text style={styles.helperSmall}>대기 인원 확인</Text>
-                </View>
-
-                <View style={[styles.badge, pendingCount > 0 ? styles.badgeHot : styles.badgeIdle]}>
-                  <Text style={[styles.badgeText, pendingCount > 0 ? styles.badgeTextHot : styles.badgeTextIdle]}>
-                    {pendingCount}
-                  </Text>
-                </View>
-              </Pressable>
-            ) : null}
-
-            <ActionButton onPress={goUpload} disabled={busy} icon="cloud-upload-outline" title="업로드" variant="primary" />
-            <ActionButton onPress={goList} disabled={busy} icon="search-outline" title="조회" variant="outline" />
-
-            <ActionButton
-              onPress={openReport}
-              disabled={busy}
-              iconLib="mci"
-              icon="alert-circle-outline"
-              title="위험요인 제보"
-              variant="orangeSoft"
-            />
-            <ActionButton
-              onPress={goHazardList}
-              disabled={busy}
-              iconLib="mci"
-              icon="clipboard-text-outline"
-              title="위험요인 내역보기"
-              variant="orangeOutline"
-            />
-
-            <ActionButton onPress={onLogout} disabled={busy} icon="log-out-outline" title="로그아웃" variant="dangerOutline" />
           </View>
         </Pressable>
       </ScrollView>
+
+      {/* 위험요인 메뉴 모달 */}
+      <Modal visible={hazardMenuOpen} transparent animationType="fade" onRequestClose={() => setHazardMenuOpen(false)}>
+        <Pressable style={styles.backdropFill} onPress={() => setHazardMenuOpen(false)} />
+        <View style={styles.modalCenterWrap}>
+          <View style={[styles.modalBox, { minWidth: 260 }]}>
+            <View style={[styles.modalInner, { gap: 12 }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={18} color={THEME.orange} />
+                <Text style={styles.modalTitle}>위험요인</Text>
+              </View>
+              <Pressable
+                onPress={() => {
+                  setHazardMenuOpen(false);
+                  setTimeout(() => openReport(), 200);
+                }}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: 16,
+                  borderRadius: 12,
+                  backgroundColor: pressed ? THEME.orangeSoft : THEME.soft,
+                  borderWidth: 1,
+                  borderColor: THEME.orangeBorder,
+                })}
+              >
+                <MaterialCommunityIcons name="camera-plus-outline" size={22} color={THEME.orange} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", fontSize: 15, color: THEME.text }}>제보하기</Text>
+                  <Text style={{ fontSize: 12, color: THEME.subtext, marginTop: 2 }}>위험요인 사진 및 내용 제보</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={THEME.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setHazardMenuOpen(false);
+                  setTimeout(() => goHazardList(), 200);
+                }}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: 16,
+                  borderRadius: 12,
+                  backgroundColor: pressed ? THEME.orangeSoft : THEME.soft,
+                  borderWidth: 1,
+                  borderColor: THEME.border,
+                })}
+              >
+                <MaterialCommunityIcons name="clipboard-text-outline" size={22} color={THEME.subtext} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", fontSize: 15, color: THEME.text }}>내역보기</Text>
+                  <Text style={{ fontSize: 12, color: THEME.subtext, marginTop: 2 }}>제보된 위험요인 목록 확인</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={THEME.muted} />
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 호차 선택 모달 */}
       <Modal visible={carPickerOpen} transparent animationType="fade" onRequestClose={() => setCarPickerOpen(false)}>
         <Pressable style={styles.backdropFill} onPress={() => setCarPickerOpen(false)} />
         <View style={styles.modalCenterWrap}>
-          <View style={[styles.modalBox, { maxHeight: "75%" }]}>
-            <View style={[styles.modalInner, { flex: 1 }]}>
+          <View style={[styles.modalBox, { maxHeight: "75%", minHeight: 220 }]}>
+            <View style={[styles.modalInner, { flex: 1, gap: 14 }]}>
               <Text style={styles.modalTitle}>호차 선택</Text>
-              <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-                {carGroups.length === 0 && supportDrivers.length === 0 && (
-                  <Text style={[styles.helper, { textAlign: "center", paddingVertical: 16 }]}>
-                    등록된 기사가 없습니다.{"\n"}(작업파트: 기사, 승인완료 필요)
-                  </Text>
-                )}
-                {carGroups.map((group) => {
-                  const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
-                  const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
-                  const status = allOut ? "출차완료" : allIn ? "입차중" : "대기";
-                  const statusColor = allOut ? THEME.subtext : allIn ? THEME.success : THEME.muted;
-                  const isSelected = selectedCarNo === group.car_no;
+              {carLoading ? (
+                <View style={{ alignItems: "center", paddingVertical: 20 }}>
+                  <ActivityIndicator />
+                  <Text style={[styles.helper, { marginTop: 8 }]}>불러오는 중...</Text>
+                </View>
+              ) : (() => {
+                // 내 car_no에서 숫자 추출 → 매칭 carGroup 찾기
+                const myNums = (myCarNo ?? "").match(/\d+/g)?.filter((n) => n.length >= 2) ?? [];
+                const myItems = myNums.map((num) => {
+                  const group = carGroups.find((g) => (g.car_no.match(/\d+/g) ?? []).includes(num));
+                  return { num, group: group ?? null, carNo: group?.car_no ?? num };
+                });
+
+                if (myItems.length === 0) {
                   return (
-                    <Pressable
-                      key={group.car_no}
-                      onPress={() => { setSelectedCarNo(group.car_no); setCarPickerOpen(false); }}
-                      style={[styles.carPickerItem, isSelected && styles.carPickerItemActive]}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.carPickerCarNo, isSelected && styles.carPickerCarNoActive]}>{group.car_no}호</Text>
-                        <Text style={styles.carPickerDrivers}>{group.drivers.map((d) => d.name).join(", ")}</Text>
-                      </View>
-                      <Text style={[styles.carPickerStatus, { color: statusColor }]}>{status}</Text>
-                    </Pressable>
+                    <Text style={[styles.helper, { textAlign: "center", paddingVertical: 16 }]}>
+                      등록된 호차가 없습니다.{"\n"}프로필에서 호차를 설정해주세요.
+                    </Text>
                   );
-                })}
-                {supportDrivers.length > 0 && (
-                  <Pressable
-                    onPress={() => { setSelectedCarNo("지원"); setCarPickerOpen(false); }}
-                    style={[styles.carPickerItem, selectedCarNo === "지원" && styles.carPickerItemActive]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.carPickerCarNo, selectedCarNo === "지원" && styles.carPickerCarNoActive]}>지원</Text>
-                      <Text style={styles.carPickerDrivers}>{supportDrivers.map((d) => d.name).join(", ")}</Text>
-                    </View>
-                  </Pressable>
-                )}
-              </ScrollView>
+                }
+
+                return (
+                  <View style={{ gap: 8 }}>
+                    {myItems.map(({ num, group, carNo }) => {
+                      const allIn = group ? group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at) : false;
+                      const allOut = group ? group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at) : false;
+                      const status = !group ? "" : allOut ? "출차완료" : allIn ? "입차중" : "대기";
+                      const statusColor = allOut ? THEME.subtext : allIn ? THEME.success : THEME.muted;
+                      const isSelected = selectedCarNo === num;
+                      return (
+                        <Pressable
+                          key={num}
+                          onPress={() => { setSelectedCarNo(num); setCarPickerOpen(false); }}
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            paddingVertical: 16,
+                            paddingHorizontal: 14,
+                            borderRadius: 14,
+                            borderWidth: 1.5,
+                            borderColor: isSelected ? THEME.success : "rgba(37,99,235,0.25)",
+                            backgroundColor: isSelected ? "#F0FDF4" : "#EFF6FF",
+                          }}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontWeight: "900", fontSize: 18, color: isSelected ? THEME.success : THEME.text }}>{num}호</Text>
+                            {group && group.drivers.length > 0 && (
+                              <Text style={styles.carPickerDrivers}>{group.drivers.map((d) => d.name).join(", ")}</Text>
+                            )}
+                          </View>
+                          {!!status && <Text style={[styles.carPickerStatus, { color: statusColor, fontSize: 13 }]}>{status}</Text>}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
             </View>
           </View>
         </View>
@@ -1906,121 +2029,139 @@ export default function MainMenu() {
       </Modal>
 
       {/* 위험요인 제보 모달 */}
-      <Modal visible={reportOpen} transparent animationType="fade" onRequestClose={() => setReportOpen(false)}>
-        <Pressable
-          style={styles.backdrop}
-          onPress={() => {
-            Keyboard.dismiss();
-            if (!reportUploading) setReportOpen(false);
-          }}
-        />
+      <Modal visible={reportOpen} transparent animationType="slide" onRequestClose={() => { Keyboard.dismiss(); if (!reportUploading) setReportOpen(false); }}>
+        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.45)" }}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => { Keyboard.dismiss(); if (!reportUploading) setReportOpen(false); }} />
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ width: "100%" }}>
+        <View style={[styles.reportSheet, Platform.OS === "android" && reportKeyboardHeight > 0 && { marginBottom: reportKeyboardHeight }]}>
+          {/* 핸들 바 */}
+          <View style={styles.reportHandle} />
 
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.reportKav}>
-          <Pressable onPress={() => Keyboard.dismiss()} style={styles.reportSheet}>
-            <View style={styles.reportHeader}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <MaterialCommunityIcons name="alert-octagon-outline" size={18} color={THEME.text} />
-                <Text style={styles.modalTitle}>위험요인 제보</Text>
+          {/* 헤더 */}
+          <View style={styles.reportHeader}>
+            <View style={styles.reportHeaderLeft}>
+              <View style={styles.reportHeaderIcon}>
+                <MaterialCommunityIcons name="alert-octagon-outline" size={20} color="#fff" />
               </View>
-
-              <Pressable
-                onPress={() => {
-                  Keyboard.dismiss();
-                  if (!reportUploading) setReportOpen(false);
-                }}
-                style={styles.closeBtn}
-              >
-                <Text style={styles.closeBtnText}>닫기</Text>
-              </Pressable>
+              <View>
+                <Text style={styles.reportTitle}>위험요인 제보</Text>
+                <Text style={styles.reportSubtitle}>사진과 코멘트로 바로 접수됩니다</Text>
+              </View>
             </View>
+            <Pressable
+              onPress={() => { Keyboard.dismiss(); if (!reportUploading) setReportOpen(false); }}
+              style={styles.reportCloseBtn}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={20} color={THEME.subtext} />
+            </Pressable>
+          </View>
 
-            <View style={styles.reportBody}>
-              <Text style={styles.helper}>사진 여러 장 + 코멘트를 남기면 바로 접수됩니다.</Text>
-
-              <View style={styles.previewBox}>
-                {reportPhotos.length > 0 ? (
-                  <Image source={{ uri: reportPhotos[0] }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
-                ) : (
-                  <Text style={styles.mutedCenter}>아직 촬영된 사진이 없습니다</Text>
-                )}
+          <ScrollView
+            ref={reportScrollRef}
+            style={Platform.OS === "android" && reportKeyboardHeight > 0 ? { maxHeight: 360 } : undefined}
+            contentContainerStyle={styles.reportBody}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* 사진 섹션 */}
+            <View style={styles.reportSection}>
+              <View style={styles.reportSectionHeader}>
+                <Ionicons name="camera" size={14} color={THEME.orange} />
+                <Text style={styles.reportSectionLabel}>사진 첨부</Text>
+                <View style={styles.reportPhotoBadge}>
+                  <Text style={styles.reportPhotoBadgeText}>{reportPhotos.length}장</Text>
+                </View>
               </View>
 
-              {reportPhotos.length > 0 && (
-                <View style={styles.thumbWrap}>
+              {/* 사진 미리보기 그리드 */}
+              {reportPhotos.length > 0 ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
                   {reportPhotos.map((uri, idx) => (
-                    <View key={`${uri}_${idx}`} style={{ position: "relative" }}>
-                      <Image source={{ uri }} style={styles.thumb} />
-                      <Pressable
-                        onPress={() => removePhotoAt(idx)}
-                        disabled={reportUploading}
-                        style={[styles.thumbRemove, reportUploading && { opacity: 0.5 }]}
-                      >
-                        <Text style={{ color: "#fff", fontWeight: "900" }}>×</Text>
+                    <View key={`${uri}_${idx}`} style={styles.reportThumbWrap}>
+                      <Image source={{ uri }} style={styles.reportThumb} resizeMode="cover" />
+                      {idx === 0 && (
+                        <View style={styles.reportThumbBadge}>
+                          <Text style={{ color: "#fff", fontSize: 9, fontWeight: "800" }}>대표</Text>
+                        </View>
+                      )}
+                      <Pressable onPress={() => removePhotoAt(idx)} disabled={reportUploading} style={[styles.reportThumbRemove, reportUploading && { opacity: 0.4 }]}>
+                        <Ionicons name="close" size={12} color="#fff" />
                       </Pressable>
                     </View>
                   ))}
-                </View>
+                  {/* 추가 버튼 */}
+                  <Pressable onPress={takeReportPhoto} disabled={reportUploading} style={styles.reportThumbAdd}>
+                    <Ionicons name="add" size={28} color={THEME.orange} />
+                  </Pressable>
+                </ScrollView>
+              ) : (
+                <Pressable onPress={takeReportPhoto} disabled={reportUploading} style={styles.reportEmptyPhoto}>
+                  <View style={styles.reportEmptyPhotoIcon}>
+                    <Ionicons name="camera-outline" size={32} color={THEME.orange} />
+                  </View>
+                  <Text style={styles.reportEmptyPhotoText}>탭하여 사진 촬영</Text>
+                  <Text style={styles.reportEmptyPhotoSub}>위험 상황을 카메라로 찍어주세요</Text>
+                </Pressable>
               )}
 
-              <View style={styles.rowGap}>
-                <Pressable
-                  onPress={pickReportPhotoFromGallery}
-                  disabled={reportUploading}
-                  style={[styles.btn, styles.btnOutline, reportUploading && styles.btnDisabled]}
-                >
-                  <View style={styles.btnInner}>
-                    <Ionicons name="images-outline" size={18} color={THEME.text} />
-                    <Text style={styles.btnText}>갤러리 추가</Text>
-                  </View>
+              {/* 버튼 행 */}
+              <View style={styles.reportPhotoRow}>
+                <Pressable onPress={takeReportPhoto} disabled={reportUploading} style={[styles.reportPhotoBtn, styles.reportPhotoBtnPrimary, reportUploading && { opacity: 0.5 }]}>
+                  <Ionicons name="camera-outline" size={17} color="#fff" />
+                  <Text style={styles.reportPhotoBtnTextWhite}>카메라</Text>
                 </Pressable>
-
-                <Pressable
-                  onPress={takeReportPhoto}
-                  disabled={reportUploading}
-                  style={[styles.btn, styles.btnPrimary, reportUploading && styles.btnDisabled]}
-                >
-                  <View style={styles.btnInner}>
-                    <Ionicons name="camera-outline" size={18} color="#fff" />
-                    <Text style={styles.btnTextWhite}>카메라 촬영</Text>
-                  </View>
+                <Pressable onPress={pickReportPhotoFromGallery} disabled={reportUploading} style={[styles.reportPhotoBtn, styles.reportPhotoBtnSecondary, reportUploading && { opacity: 0.5 }]}>
+                  <Ionicons name="images-outline" size={17} color={THEME.text} />
+                  <Text style={styles.reportPhotoBtnText}>갤러리</Text>
                 </Pressable>
               </View>
-
-              <View style={{ gap: 6 }}>
-                <Text style={styles.labelStrong}>코멘트</Text>
-                <TextInput
-                  value={reportComment}
-                  onChangeText={setReportComment}
-                  placeholder="예) 통로에 적치물이 있어 지게차 동선 위험"
-                  placeholderTextColor={THEME.muted}
-                  editable={!reportUploading}
-                  multiline
-                  style={styles.textarea}
-                />
-              </View>
-
-              <Pressable
-                onPress={submitReport}
-                disabled={reportUploading}
-                style={[styles.btn, styles.btnOrangeSolid, reportUploading && styles.btnDisabled]}
-              >
-                {reportUploading ? (
-                  <View style={styles.inlineCenter}>
-                    <ActivityIndicator color="#fff" />
-                    <Text style={styles.btnTextWhite}>제보 접수 중...</Text>
-                  </View>
-                ) : (
-                  <View style={styles.btnInner}>
-                    <MaterialCommunityIcons name="send" size={18} color="#fff" />
-                    <Text style={styles.btnTextWhite}>제보 제출 (사진 {reportPhotos.length}장)</Text>
-                  </View>
-                )}
-              </Pressable>
-
-              <Text style={styles.smallNote}>사진/코멘트는 안전관리 목적에만 사용됩니다.</Text>
             </View>
-          </Pressable>
-        </KeyboardAvoidingView>
+
+            {/* 구분선 */}
+            <View style={styles.reportDivider} />
+
+            {/* 코멘트 섹션 */}
+            <View style={styles.reportSection}>
+              <View style={styles.reportSectionHeader}>
+                <Ionicons name="chatbubble-ellipses-outline" size={14} color={THEME.orange} />
+                <Text style={styles.reportSectionLabel}>상황 설명</Text>
+                <Text style={styles.reportCommentCount}>{reportComment.length}자</Text>
+              </View>
+              <TextInput
+                value={reportComment}
+                onChangeText={setReportComment}
+                placeholder={"어떤 위험 상황인지 간략히 설명해 주세요.\n예) 통로에 적치물이 있어 지게차 동선 위험"}
+                placeholderTextColor={THEME.muted}
+                editable={!reportUploading}
+                multiline
+                style={styles.reportTextarea}
+                onFocus={() => Platform.OS === "android" && setTimeout(() => reportScrollRef.current?.scrollToEnd({ animated: true }), 200)}
+              />
+            </View>
+
+            {/* 제출 버튼 */}
+            <Pressable onPress={submitReport} disabled={reportUploading} style={[styles.reportSubmitBtn, reportUploading && { opacity: 0.7 }]}>
+              {reportUploading ? (
+                <View style={styles.inlineCenter}>
+                  <ActivityIndicator color="#fff" size="small" />
+                  <Text style={styles.reportSubmitText}>제보 접수 중...</Text>
+                </View>
+              ) : (
+                <View style={styles.inlineCenter}>
+                  <MaterialCommunityIcons name="send-circle-outline" size={22} color="#fff" />
+                  <Text style={styles.reportSubmitText}>
+                    제보 제출{reportPhotos.length > 0 ? `  ·  사진 ${reportPhotos.length}장` : ""}
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+
+            <Text style={styles.reportNote}>수집된 사진과 내용은 안전관리 목적에만 사용됩니다.</Text>
+          </ScrollView>
+        </View>
+          </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -2029,146 +2170,162 @@ export default function MainMenu() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: THEME.bg },
 
-  scrollContent: {
-    paddingHorizontal: 18,
-    flexGrow: 1,
-    justifyContent: "flex-start",
-    gap: 14,
+  // 헤더 배너
+  heroBanner: {
+    backgroundColor: "#111827",
+    paddingHorizontal: 20,
+    paddingBottom: 24,
   },
-
-  header: { alignItems: "center", gap: 10, marginBottom: 2 },
-  logo: { width: 260, height: 78, resizeMode: "contain" },
-  h1: { fontSize: 20, fontWeight: "800", color: THEME.text, letterSpacing: -0.2 },
-
-  card: {
-    backgroundColor: THEME.surface,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: THEME.border,
-
-    shadowColor: THEME.shadow as any,
-    shadowOpacity: 1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
-
-    gap: 12,
-  },
-
-  cardTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  cardTitle: { fontWeight: "800", color: THEME.text, fontSize: 16, letterSpacing: -0.2 },
-
-  pill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  heroLogo: { width: 180, height: 52, resizeMode: "contain", tintColor: "#fff", marginBottom: 16 },
+  heroBottom: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
+  heroName: { fontSize: 22, fontWeight: "800", color: "#fff", letterSpacing: -0.4, lineHeight: 28 },
+  heroGreeting: { fontSize: 13, color: "rgba(255,255,255,0.7)", marginTop: 2, lineHeight: 18 },
+  heroDate: { fontSize: 12, color: "rgba(255,255,255,0.45)", marginTop: 4 },
+  workPartChip: {
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 10,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: THEME.soft,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  workPartChipText: { fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.9)" },
+
+  mainContent: { padding: 16, gap: 12 },
+
+  // 출퇴근 카드
+  attCard: {
+    backgroundColor: THEME.surface,
+    borderRadius: 20,
+    padding: 16,
+    gap: 14,
     borderWidth: 1,
     borderColor: THEME.border,
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
-  pillText: { color: THEME.subtext, fontSize: 12, fontWeight: "700" },
+  attCardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  attCardIconWrap: {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: "#111827",
+    alignItems: "center", justifyContent: "center",
+  },
+  attCardTitle: { fontSize: 15, fontWeight: "800", color: THEME.text, letterSpacing: -0.2 },
+  attStatusChip: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8,
+  },
+  attStatusText: { fontSize: 12, fontWeight: "700" },
+  carPill: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 9, paddingVertical: 5,
+    borderRadius: 9, borderWidth: 1,
+    borderColor: THEME.border, backgroundColor: THEME.soft,
+  },
+  carPillText: { fontSize: 12, fontWeight: "700", color: THEME.subtext },
+
+  dateNav: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    backgroundColor: THEME.soft, borderRadius: 14,
+    borderWidth: 1, borderColor: THEME.border,
+    paddingHorizontal: 6, height: 52,
+  },
+  dateNavArrow: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  dateNavText: { fontSize: 18, fontWeight: "800", color: THEME.text, letterSpacing: -0.3 },
+
+  driverList: { gap: 8 },
+  driverRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4 },
+  driverAvatar: {
+    width: 30, height: 30, borderRadius: 10,
+    backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border,
+    alignItems: "center", justifyContent: "center",
+  },
+  driverAvatarText: { fontSize: 13, fontWeight: "800", color: THEME.subtext },
+  driverName: { fontSize: 14, fontWeight: "700", color: THEME.text },
+  driverTime: { fontSize: 12, fontWeight: "700", color: THEME.subtext },
+  driverTimeSep: { fontSize: 12, color: THEME.muted, marginHorizontal: 2 },
+
+  supportBtn: {
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 10, borderWidth: 1,
+    borderColor: THEME.border, backgroundColor: THEME.soft,
+  },
+  supportBtnText: { fontSize: 12, fontWeight: "700", color: THEME.text },
+
+  punchRow: { flexDirection: "row", gap: 12 },
+  punchBtn: {
+    flex: 1, height: 68, borderRadius: 16,
+    borderWidth: 1.5, alignItems: "center", justifyContent: "center", gap: 2,
+  },
+  punchBtnIn: { backgroundColor: "#F0FDF4", borderColor: "#86EFAC" },
+  punchBtnOut: { backgroundColor: "#EFF6FF", borderColor: "#93C5FD" },
+  punchBtnDone: { backgroundColor: THEME.soft, borderColor: THEME.border },
+  punchBtnLabel: { fontSize: 11, fontWeight: "700", color: THEME.muted },
+  punchBtnTime: { fontSize: 20, fontWeight: "800", color: THEME.text, letterSpacing: -0.5 },
+  punchBtnIdle: { fontSize: 16, fontWeight: "800", color: THEME.text, letterSpacing: -0.2 },
 
   helper: { color: THEME.subtext, fontSize: 12, lineHeight: 16 },
-  helperSmall: { color: THEME.subtext, fontSize: 11, marginTop: 2 },
-
-  attDateNav: {
-    height: 64,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    backgroundColor: THEME.soft,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  attDateArrowBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  attDateText: {
-    color: "#4B5563",
-    fontWeight: "800",
-    fontSize: 20,
-    letterSpacing: -0.2,
-  },
-
-  attPunchRow: { flexDirection: "row", gap: 12 },
-  attPunchBtn: {
-    flex: 1,
-    height: 54,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  attPunchBtnIn: { backgroundColor: "#ECFDF3", borderColor: "#A7F3D0" },
-  attPunchBtnOut: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
-  attPunchBtnDone: { backgroundColor: THEME.soft, borderColor: THEME.border },
-  attPunchTimeText: { color: "#111827", fontWeight: "800", fontSize: 18, letterSpacing: -0.1 },
-  attPunchIdleText: { color: "#374151", fontWeight: "800", fontSize: 16, letterSpacing: -0.1 },
-
-  twoCols: { flexDirection: "row", gap: 12 },
-  label: { color: "#374151", fontWeight: "700", fontSize: 12 },
-  labelStrong: { color: "#374151", fontWeight: "800", fontSize: 13 },
-  timeValue: { color: THEME.text, fontWeight: "800", fontSize: 18, marginTop: 4, letterSpacing: -0.2 },
-
-  rowGap: { flexDirection: "row", gap: 10 },
-
-  btn: { flex: 1, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   btnInner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   btnDisabled: { opacity: 0.65 },
+  btnOrangeSolid: { backgroundColor: THEME.orange },
 
+  // 모달 공통 버튼
+  btn: { flex: 1, height: 52, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   btnPrimary: { backgroundColor: THEME.primary },
   btnSuccess: { backgroundColor: THEME.success },
   btnOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: THEME.border },
-
   btnOrangeSoft: { backgroundColor: THEME.orangeSoft, borderWidth: 1, borderColor: THEME.orangeBorder },
   btnOrangeOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: THEME.orangeBorder },
-  btnOrangeSolid: { backgroundColor: THEME.orange },
-
   btnDangerOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: "#FCA5A5" },
-
   btnTextWhite: { color: "#FFFFFF", fontWeight: "800", fontSize: 15, letterSpacing: -0.1 },
   btnText: { color: THEME.text, fontWeight: "800", fontSize: 15, letterSpacing: -0.1 },
   btnTextOrange: { color: "#9A3412", fontWeight: "800", fontSize: 15, letterSpacing: -0.1 },
   btnTextDanger: { color: "#DC2626", fontWeight: "800", fontSize: 15, letterSpacing: -0.1 },
+  rowGap: { flexDirection: "row", gap: 10 },
+  labelStrong: { color: "#374151", fontWeight: "800", fontSize: 13 },
 
-  loadingRow: { alignItems: "center", paddingTop: 4, gap: 6 },
-  loadingText: { color: THEME.muted, fontSize: 12 },
+  // 승인 카드
+  approveCard: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    backgroundColor: THEME.surface, borderRadius: 16, padding: 14,
+    borderWidth: 1, borderColor: THEME.border,
+    shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 }, elevation: 1,
+  },
+  approveCardLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  approveCardIcon: {
+    width: 36, height: 36, borderRadius: 11,
+    backgroundColor: "#111827", alignItems: "center", justifyContent: "center",
+  },
+  approveCardTitle: { fontSize: 14, fontWeight: "800", color: THEME.text },
+  approveCardSub: { fontSize: 11, color: THEME.subtext, marginTop: 2 },
+  approveCardBadge: {
+    minWidth: 32, height: 32, borderRadius: 10,
+    paddingHorizontal: 8, alignItems: "center", justifyContent: "center",
+  },
+  approveCardBadgeHot: { backgroundColor: "#111827" },
+  approveCardBadgeIdle: { backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border },
+  approveCardBadgeText: { fontWeight: "900", fontSize: 14, color: THEME.subtext },
 
-  approveRow: {
-    height: 56,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: THEME.surface,
+  // 기능 그리드
+  actionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  actionCell: {
+    width: "48%", flexGrow: 1,
+    borderRadius: 18, padding: 16, gap: 8,
     borderWidth: 1,
-    borderColor: THEME.border,
+    shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 }, elevation: 1,
   },
-
-  badge: {
-    minWidth: 30,
-    height: 30,
-    paddingHorizontal: 10,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  badgeHot: { backgroundColor: "#111111", borderWidth: 1, borderColor: "#111111" },
-  badgeIdle: { backgroundColor: "#F3F4F6", borderWidth: 1, borderColor: "#D1D5DB" },
-  badgeText: { fontWeight: "900" },
-  badgeTextHot: { color: "#FFFFFF" },
-  badgeTextIdle: { color: "#111111" },
+  actionCellPrimary: { backgroundColor: "#111827", borderColor: "#111827" },
+  actionCellOutline: { backgroundColor: THEME.surface, borderColor: THEME.border },
+  actionCellOrange: { backgroundColor: THEME.orangeSoft, borderColor: THEME.border },
+  actionCellDanger: { backgroundColor: "#FEF2F2", borderColor: "#FECACA" },
+  actionCellIconWrap: { width: 44, height: 44, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  actionCellTitle: { fontSize: 15, fontWeight: "800", color: THEME.text, letterSpacing: -0.2 },
+  actionCellSub: { fontSize: 12, color: THEME.subtext },
 
   footnote: { color: THEME.muted, fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },
 
@@ -2225,77 +2382,164 @@ const styles = StyleSheet.create({
   tempWorkPartChipText: { color: "#374151", fontWeight: "800", fontSize: 14 },
   tempWorkPartChipTextActive: { color: "#15803D" },
 
-  reportKav: { position: "absolute", left: 16, right: 16, top: 110 },
+  // 위험요인 제보 모달
+  reportBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)" },
   reportSheet: {
     backgroundColor: THEME.surface,
-    borderRadius: 18,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: THEME.border,
-    shadowColor: THEME.shadow as any,
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 4,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 32,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 12,
+  },
+  reportHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: THEME.border,
+    alignSelf: "center",
+    marginTop: 10,
+    marginBottom: 4,
   },
   reportHeader: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: THEME.border,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: THEME.soft,
   },
-  closeBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: THEME.surface,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  closeBtnText: { fontWeight: "800", color: THEME.text },
-  reportBody: { padding: 14, gap: 12 },
-  previewBox: {
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: THEME.soft,
-    height: 180,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  mutedCenter: { color: THEME.muted, fontWeight: "800" },
-  thumbWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  thumb: { width: 66, height: 66, borderRadius: 14, backgroundColor: "#F3F4F6" },
-  thumbRemove: {
-    position: "absolute",
-    top: -6,
-    right: -6,
-    width: 24,
-    height: 24,
+  reportHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  reportHeaderIcon: {
+    width: 38,
+    height: 38,
     borderRadius: 12,
+    backgroundColor: THEME.orange,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: THEME.primary,
   },
-  textarea: {
-    minHeight: 92,
+  reportTitle: { fontSize: 16, fontWeight: "800", color: THEME.text, letterSpacing: -0.3 },
+  reportSubtitle: { fontSize: 12, color: THEME.subtext, marginTop: 1 },
+  reportCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: THEME.soft,
     borderWidth: 1,
     borderColor: THEME.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reportBody: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8, gap: 16 },
+  reportSection: { gap: 10 },
+  reportSectionHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
+  reportSectionLabel: { fontWeight: "800", fontSize: 13, color: THEME.text, flex: 1 },
+  reportPhotoBadge: {
+    backgroundColor: THEME.orangeSoft,
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: THEME.orangeBorder,
+  },
+  reportPhotoBadgeText: { fontSize: 11, fontWeight: "800", color: THEME.orange },
+  reportCommentCount: { fontSize: 11, color: THEME.muted, fontWeight: "600" },
+  reportEmptyPhoto: {
+    height: 140,
     borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderWidth: 1.5,
+    borderStyle: "dashed",
+    borderColor: THEME.orangeBorder,
+    backgroundColor: THEME.orangeSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  reportEmptyPhotoIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,106,0,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reportEmptyPhotoText: { fontWeight: "800", fontSize: 14, color: THEME.orange },
+  reportEmptyPhotoSub: { fontSize: 12, color: THEME.subtext },
+  reportThumbWrap: { position: "relative", width: 90, height: 90 },
+  reportThumb: { width: 90, height: 90, borderRadius: 14, backgroundColor: "#F3F4F6" },
+  reportThumbBadge: {
+    position: "absolute",
+    bottom: 6,
+    left: 6,
+    backgroundColor: THEME.orange,
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  reportThumbRemove: {
+    position: "absolute",
+    top: -5,
+    right: -5,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#374151",
+  },
+  reportThumbAdd: {
+    width: 90,
+    height: 90,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderStyle: "dashed",
+    borderColor: THEME.orangeBorder,
+    backgroundColor: THEME.orangeSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reportPhotoRow: { flexDirection: "row", gap: 10 },
+  reportPhotoBtn: { flex: 1, height: 44, borderRadius: 12, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 },
+  reportPhotoBtnPrimary: { backgroundColor: THEME.orange },
+  reportPhotoBtnSecondary: { backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border },
+  reportPhotoBtnTextWhite: { fontWeight: "700", fontSize: 14, color: "#fff" },
+  reportPhotoBtnText: { fontWeight: "700", fontSize: 14, color: THEME.text },
+  reportDivider: { height: 1, backgroundColor: THEME.border, marginHorizontal: -18 },
+  reportTextarea: {
+    minHeight: 96,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderRadius: 14,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     backgroundColor: THEME.soft,
     color: THEME.text,
     textAlignVertical: "top",
-    lineHeight: 18,
+    lineHeight: 20,
+    fontSize: 14,
   },
+  reportSubmitBtn: {
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: THEME.orange,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+    shadowColor: THEME.orange,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  reportSubmitText: { fontWeight: "800", fontSize: 15, color: "#fff", letterSpacing: -0.2 },
+  reportNote: { fontSize: 11, color: THEME.muted, textAlign: "center", lineHeight: 16 },
+
+  mutedCenter: { color: THEME.muted, fontWeight: "800" },
   inlineCenter: { flexDirection: "row", alignItems: "center", gap: 10 },
-  smallNote: { color: THEME.muted, fontSize: 11, textAlign: "center", lineHeight: 16 },
 
   // 기사 호차 관련
   carSelectHint: {
