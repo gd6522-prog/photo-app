@@ -295,7 +295,7 @@ export default function UploadScreen() {
 
   // ===== 공통 =====
   const [selectedStore, setSelectedStore] = useState<StoreMapRow | null>(null);
-  const [queueAssets, setQueueAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const [queueAssets, setQueueAssets] = useState<(ImagePicker.ImagePickerAsset & { thumbUri?: string })[]>([]);
   const queueCount = queueAssets.length;
 
   const [busy, setBusy] = useState(false);
@@ -689,24 +689,24 @@ export default function UploadScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
       selectionLimit: 0,
-      quality: 0.85,
+      quality: 0.9,
       exif: false,
     });
 
     if (picked.canceled) return;
     const assets = picked.assets ?? [];
-    const compressed = await Promise.all(assets.map(compressAsset));
-    addToQueue(compressed);
+    const withThumbs = await Promise.all(assets.map(makeThumb));
+    addToQueue(withThumbs);
   };
 
-  const compressAsset = async (asset: ImagePicker.ImagePickerAsset): Promise<ImagePicker.ImagePickerAsset> => {
+  const makeThumb = async (asset: ImagePicker.ImagePickerAsset): Promise<ImagePicker.ImagePickerAsset & { thumbUri?: string }> => {
     try {
       const result = await ImageManipulator.manipulateAsync(
         asset.uri,
-        [{ resize: { width: 1920 } }],
-        { compress: 0.82, format: ImageManipulator.SaveFormat.JPEG }
+        [{ resize: { width: 400 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
       );
-      return { ...asset, uri: result.uri, width: result.width, height: result.height };
+      return { ...asset, thumbUri: result.uri };
     } catch {
       return asset;
     }
@@ -721,12 +721,12 @@ export default function UploadScreen() {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) return Alert.alert("권한 필요", "카메라 권한을 허용해주세요.");
 
-    const shot = await ImagePicker.launchCameraAsync({ quality: 0.85, exif: false });
+    const shot = await ImagePicker.launchCameraAsync({ quality: 0.9, exif: false });
     if (shot.canceled) return;
 
     const assets = shot.assets ?? [];
-    const compressed = await Promise.all(assets.map(compressAsset));
-    addToQueue(compressed);
+    const withThumbs = await Promise.all(assets.map(makeThumb));
+    addToQueue(withThumbs);
   };
 
   // ✅ 현장(photos) insert robust
@@ -1369,7 +1369,7 @@ export default function UploadScreen() {
                 contentContainerStyle={{ gap: 10, paddingHorizontal: 2, paddingVertical: 2 }}
                 renderItem={({ item }) => (
                   <View style={{ width: 76 }}>
-                    <Image source={{ uri: item.uri }} style={styles.queueThumb} />
+                    <Image source={{ uri: item.thumbUri ?? item.uri }} style={styles.queueThumb} />
                     <Pressable onPress={() => removeFromQueue(item.uri)} disabled={busy} style={[styles.thumbX, busy && styles.dim]}>
                       <Ionicons name="close" size={12} color={THEME.text} />
                       <Text style={styles.thumbXText}>삭제</Text>
