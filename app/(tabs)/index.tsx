@@ -402,6 +402,7 @@ type AttendanceRow = {
   id: string;
   user_id: string;
   work_date: string;
+  car_no: string;
   status: "open" | "closed" | "void";
   clock_in_at: string | null;
   clock_out_at: string | null;
@@ -605,7 +606,7 @@ export default function MainMenu() {
   }, [user]);
 
   /** ✅ 선택 날짜 출퇴근 조회: work_shifts */
-  const loadAttendanceForDate = useCallback(async (workDate: string) => {
+  const loadAttendanceForDate = useCallback(async (workDate: string, carNo: string = "") => {
     const session = await requireSession();
     if (!session) return;
 
@@ -615,10 +616,11 @@ export default function MainMenu() {
         supabase
           .from("work_shifts")
           .select(
-            "id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
+            "id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
           )
           .eq("user_id", session.user.id)
           .eq("work_date", workDate)
+          .eq("car_no", carNo)
           .maybeSingle(),
         12000,
         "출퇴근 조회"
@@ -654,7 +656,7 @@ export default function MainMenu() {
         const shiftsRes = await withTimeout(
           supabase
             .from("work_shifts")
-            .select("id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at")
+            .select("id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at")
             .in("user_id", driverIds)
             .eq("work_date", date),
           12000,
@@ -663,8 +665,8 @@ export default function MainMenu() {
         shiftsData = (shiftsRes as any).data ?? [];
       }
 
-      const shiftMap: { [id: string]: AttendanceRow } = {};
-      for (const s of shiftsData) shiftMap[(s as any).user_id] = s as AttendanceRow;
+      const shiftMap: { [key: string]: AttendanceRow } = {};
+      for (const s of shiftsData) shiftMap[`${(s as any).user_id}:${(s as any).car_no ?? ""}`] = s as AttendanceRow;
 
       const groupMap: { [car: string]: DriverProfile[] } = {};
       const support: DriverProfile[] = [];
@@ -733,8 +735,9 @@ export default function MainMenu() {
   }, [loadAdmin, loadProfileName, loadCarData, registerPushTokenForThisUser]);
 
   useEffect(() => {
-    loadAttendanceForDate(selectedWorkDate);
-  }, [loadAttendanceForDate, selectedWorkDate]);
+    const carNo = workPart === "기사" ? (selectedCarNo || "") : "";
+    loadAttendanceForDate(selectedWorkDate, carNo);
+  }, [loadAttendanceForDate, selectedWorkDate, workPart, selectedCarNo]);
 
   useEffect(() => {
     if (isDriverUser) loadCarData(selectedWorkDate);
@@ -752,10 +755,11 @@ export default function MainMenu() {
     useCallback(() => {
       loadAdmin();
       loadProfileName();
-      loadAttendanceForDate(selectedWorkDate);
+      const carNo = workPart === "기사" ? (selectedCarNo || "") : "";
+      loadAttendanceForDate(selectedWorkDate, carNo);
       loadCarData(selectedWorkDate);
       return () => {};
-    }, [loadAdmin, loadAttendanceForDate, loadProfileName, loadCarData, selectedWorkDate])
+    }, [loadAdmin, loadAttendanceForDate, loadProfileName, loadCarData, selectedWorkDate, workPart, selectedCarNo])
   );
 
   const ensureTemporaryWorkerReady = () => {
@@ -1150,6 +1154,7 @@ export default function MainMenu() {
       setClockPhase("서버 저장");
       startWatchdog("서버 저장");
 
+      const clockInCarNo = isDriverUser ? (selectedCarNo || "") : "";
       const res = await withTimeout(
         supabase
           .from("work_shifts")
@@ -1157,6 +1162,7 @@ export default function MainMenu() {
             {
               user_id: session.user.id,
               work_date: workDate,
+              car_no: clockInCarNo,
               status: "open",
               clock_in_at: nowIso,
               clock_in_lat: loc.lat,
@@ -1164,10 +1170,10 @@ export default function MainMenu() {
               clock_in_accuracy_m: loc.accuracy ?? null,
               clock_in_source: source,
             },
-            { onConflict: "user_id,work_date" }
+            { onConflict: "user_id,work_date,car_no" }
           )
           .select(
-            "id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
+            "id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
           )
           .single(),
         12000,
@@ -1203,7 +1209,7 @@ export default function MainMenu() {
       setSelectedTempDailyPart("");
 
       Alert.alert(`${clockInLabel} 완료`, `${clockInLabel}: ${formatKSTTime(nowIso)}`);
-      loadAttendanceForDate(selectedWorkDate).catch(() => {});
+      loadAttendanceForDate(selectedWorkDate, isDriverUser ? (selectedCarNo || "") : "").catch(() => {});
     } catch (e: any) {
       Alert.alert("출근 실패", e?.message ?? String(e));
     } finally {
@@ -1211,7 +1217,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, clockInLabel, getCurrentLocationChecked, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedTempDailyPart, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockInLabel, getCurrentLocationChecked, isDriverUser, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedCarNo, selectedTempDailyPart, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   /** ✅ 퇴근: work_shifts + work_events */
   const doClockOut = useCallback(async () => {
@@ -1249,6 +1255,7 @@ export default function MainMenu() {
       setClockPhase("서버 저장");
       startWatchdog("서버 저장");
 
+      const clockOutCarNo = isDriverUser ? (selectedCarNo || "") : "";
       const res = await withTimeout(
         supabase
           .from("work_shifts")
@@ -1256,6 +1263,7 @@ export default function MainMenu() {
             {
               user_id: session.user.id,
               work_date: workDate,
+              car_no: clockOutCarNo,
               status: "closed",
               clock_out_at: nowIso,
               clock_out_lat: loc.lat,
@@ -1263,10 +1271,10 @@ export default function MainMenu() {
               clock_out_accuracy_m: loc.accuracy ?? null,
               clock_out_source: source,
             },
-            { onConflict: "user_id,work_date" }
+            { onConflict: "user_id,work_date,car_no" }
           )
           .select(
-            "id, user_id, work_date, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
+            "id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
           )
           .single(),
         12000,
@@ -1298,7 +1306,7 @@ export default function MainMenu() {
       if (isTemporaryWorker) setTodayTempWorkPart("");
 
       Alert.alert(`${clockOutLabel} 완료`, `${clockOutLabel}: ${formatKSTTime(nowIso)}`);
-      loadAttendanceForDate(selectedWorkDate).catch(() => {});
+      loadAttendanceForDate(selectedWorkDate, isDriverUser ? (selectedCarNo || "") : "").catch(() => {});
     } catch (e: any) {
       Alert.alert("퇴근 실패", e?.message ?? String(e));
     } finally {
@@ -1306,7 +1314,7 @@ export default function MainMenu() {
       setBusy(false);
       setTimeout(() => setClockPhase(""), 500);
     }
-  }, [att, busy, clockOutLabel, getCurrentLocationChecked, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedWorkDate, startWatchdog, stopWatchdog]);
+  }, [att, busy, clockOutLabel, getCurrentLocationChecked, isDriverUser, isTemporaryWorker, requireSession, loadAttendanceForDate, selectedCarNo, selectedWorkDate, startWatchdog, stopWatchdog]);
 
   const doCarClockIn = useCallback(async (group: CarGroup, workDate: string) => {
     if (carBusy) return;
@@ -1315,13 +1323,13 @@ export default function MainMenu() {
     setCarBusy(true);
     try {
       const nowIso = new Date().toISOString();
-      const unclocked = group.drivers.filter((d) => !carShifts[d.id]?.clock_in_at);
+      const unclocked = group.drivers.filter((d) => !carShifts[`${d.id}:${group.car_no}`]?.clock_in_at);
       if (unclocked.length === 0) { Alert.alert("안내", "이미 모두 입차 처리되었습니다."); return; }
       for (const driver of unclocked) {
         await withTimeout(
           supabase.from("work_shifts").upsert(
-            { user_id: driver.id, work_date: workDate, status: "open", clock_in_at: nowIso, clock_in_source: "vehicle" },
-            { onConflict: "user_id,work_date" }
+            { user_id: driver.id, work_date: workDate, car_no: group.car_no, status: "open", clock_in_at: nowIso, clock_in_source: "vehicle" },
+            { onConflict: "user_id,work_date,car_no" }
           ),
           12000, "입차 저장"
         );
@@ -1342,13 +1350,13 @@ export default function MainMenu() {
     setCarBusy(true);
     try {
       const nowIso = new Date().toISOString();
-      const toOut = group.drivers.filter((d) => carShifts[d.id]?.clock_in_at && !carShifts[d.id]?.clock_out_at);
+      const toOut = group.drivers.filter((d) => carShifts[`${d.id}:${group.car_no}`]?.clock_in_at && !carShifts[`${d.id}:${group.car_no}`]?.clock_out_at);
       if (toOut.length === 0) { Alert.alert("안내", "출차할 인원이 없습니다."); return; }
       for (const driver of toOut) {
         await withTimeout(
           supabase.from("work_shifts").upsert(
-            { user_id: driver.id, work_date: workDate, status: "closed", clock_out_at: nowIso, clock_out_source: "vehicle" },
-            { onConflict: "user_id,work_date" }
+            { user_id: driver.id, work_date: workDate, car_no: group.car_no, status: "closed", clock_out_at: nowIso, clock_out_source: "vehicle" },
+            { onConflict: "user_id,work_date,car_no" }
           ),
           12000, "출차 저장"
         );
@@ -1372,8 +1380,8 @@ export default function MainMenu() {
       const workDate = kstNowDateString();
       await withTimeout(
         supabase.from("work_shifts").upsert(
-          { user_id: driver.id, work_date: workDate, status: "open", clock_in_at: nowIso, clock_in_source: `support:${store.store_code}` },
-          { onConflict: "user_id,work_date" }
+          { user_id: driver.id, work_date: workDate, car_no: "", status: "open", clock_in_at: nowIso, clock_in_source: `support:${store.store_code}` },
+          { onConflict: "user_id,work_date,car_no" }
         ),
         12000, "지원 입차 저장"
       );
@@ -1496,8 +1504,8 @@ export default function MainMenu() {
     if (isDriverUser && selectedCarNo && selectedCarNo !== "지원") {
       const group = carGroups.find((g) => g.car_no === selectedCarNo || (g.car_no.match(/\d+/g) ?? []).includes(selectedCarNo));
       if (group) {
-        const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
-        const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
+        const allIn = group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_in_at);
+        const allOut = group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_out_at);
         if (allOut) return { label: "출차 완료", color: THEME.subtext, bg: THEME.soft };
         if (allIn) return { label: "입차 중", color: "#16A34A", bg: "#ECFDF3" };
         return { label: "미입차", color: THEME.muted, bg: THEME.bg };
@@ -1584,7 +1592,7 @@ export default function MainMenu() {
                 return (
                   <View style={styles.driverList}>
                     {group.drivers.map((driver) => {
-                      const sh = carShifts[driver.id];
+                      const sh = carShifts[`${driver.id}:${group.car_no}`];
                       return (
                         <View key={driver.id} style={styles.driverRow}>
                           <View style={styles.driverAvatar}>
@@ -1609,7 +1617,7 @@ export default function MainMenu() {
                     <Text style={styles.helper}>등록된 지원 기사가 없습니다.</Text>
                   ) : (
                     supportDrivers.map((driver) => {
-                      const sh = carShifts[driver.id];
+                      const sh = carShifts[`${driver.id}:`];
                       return (
                         <View key={driver.id} style={styles.driverRow}>
                           <View style={styles.driverAvatar}>
@@ -1660,15 +1668,15 @@ export default function MainMenu() {
                       </View>
                     );
                   }
-                  const allIn = group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at);
-                  const anyIn = group.drivers.some((d) => !!carShifts[d.id]?.clock_in_at);
-                  const allOut = group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at);
-                  const firstInTime = group.drivers.find((d) => carShifts[d.id]?.clock_in_at)?.id;
-                  const firstOutTime = group.drivers.find((d) => carShifts[d.id]?.clock_out_at)?.id;
+                  const allIn = group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_in_at);
+                  const anyIn = group.drivers.some((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_in_at);
+                  const allOut = group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_out_at);
+                  const firstInDriver = group.drivers.find((d) => carShifts[`${d.id}:${group.car_no}`]?.clock_in_at);
+                  const firstOutDriver = group.drivers.find((d) => carShifts[`${d.id}:${group.car_no}`]?.clock_out_at);
                   return (
                     <View style={styles.punchRow}>
-                      {mkInBtn(() => doCarClockIn(group, selectedWorkDate), carBusy || allIn, allIn ? (firstInTime ? carShifts[firstInTime]?.clock_in_at : null) : null, "입차")}
-                      {mkOutBtn(() => doCarClockOut(group, selectedWorkDate), carBusy || !anyIn || allOut, allOut ? (firstOutTime ? carShifts[firstOutTime]?.clock_out_at : null) : null, "출차")}
+                      {mkInBtn(() => doCarClockIn(group, selectedWorkDate), carBusy || allIn, allIn ? (firstInDriver ? carShifts[`${firstInDriver.id}:${group.car_no}`]?.clock_in_at : null) : null, "입차")}
+                      {mkOutBtn(() => doCarClockOut(group, selectedWorkDate), carBusy || !anyIn || allOut, allOut ? (firstOutDriver ? carShifts[`${firstOutDriver.id}:${group.car_no}`]?.clock_out_at : null) : null, "출차")}
                     </View>
                   );
                 }
@@ -1837,8 +1845,8 @@ export default function MainMenu() {
                 return (
                   <View style={{ gap: 8 }}>
                     {myItems.map(({ num, group, carNo }) => {
-                      const allIn = group ? group.drivers.every((d) => !!carShifts[d.id]?.clock_in_at) : false;
-                      const allOut = group ? group.drivers.every((d) => !!carShifts[d.id]?.clock_out_at) : false;
+                      const allIn = group ? group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_in_at) : false;
+                      const allOut = group ? group.drivers.every((d) => !!carShifts[`${d.id}:${group.car_no}`]?.clock_out_at) : false;
                       const status = !group ? "" : allOut ? "출차완료" : allIn ? "입차중" : "대기";
                       const statusColor = allOut ? THEME.subtext : allIn ? THEME.success : THEME.muted;
                       const isSelected = selectedCarNo === num;
