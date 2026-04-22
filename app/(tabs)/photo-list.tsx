@@ -984,341 +984,248 @@ export default function PhotoListScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       {/* 헤더 */}
       <View style={[styles.headerWrap, { paddingTop: topPad }]}>
-        <View style={styles.headerTopRow}>
-          <Text style={styles.headerTitleLeft}>{isDriver ? "기사 사진 조회" : "사진 조회"}</Text>
-          <View style={{ flex: 1 }} />
-          <Pressable
-            onPress={() => fetchList()}
-            disabled={loading || busy}
-            style={[styles.headerIconBtn, (loading || busy) && styles.dim]}
-            hitSlop={8}
-          >
-            <Ionicons name="refresh" size={18} color={THEME.text} />
-          </Pressable>
+        <View style={styles.headerRow}>
+          <Text style={styles.headerTitle}>{isDriver ? "기사 사진 조회" : "사진 조회"}</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {!isDriver && (
+              <Pressable
+                onPress={enterOrExitSelectMode}
+                disabled={loading || busy}
+                style={[styles.headerBtn, selectMode && styles.headerBtnActive, (loading || busy) && styles.dim]}
+              >
+                <Ionicons name="checkbox-outline" size={18} color={selectMode ? THEME.blue : THEME.text} />
+              </Pressable>
+            )}
+            <Pressable
+              onPress={() => fetchList()}
+              disabled={loading || busy}
+              style={[styles.headerBtn, (loading || busy) && styles.dim]}
+            >
+              {loading
+                ? <ActivityIndicator size="small" color={THEME.text} />
+                : <Ionicons name="refresh" size={18} color={THEME.text} />}
+            </Pressable>
+          </View>
         </View>
-
       </View>
 
-      {/* 컨트롤 */}
-      <View style={{ paddingHorizontal: 16, gap: 10, paddingBottom: 10 }}>
-        {/* ✅ 기사 모드: 카테고리 탭만 보여줌 */}
+      {/* 필터 */}
+      <View style={{ paddingHorizontal: 16, paddingBottom: 10 }}>
         {isDriver ? (
-          <View style={styles.card}>
-            <Text style={styles.label}>기사 분류</Text>
-            <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={styles.filterCard}>
+            <View style={{ flexDirection: "row", gap: 8 }}>
               {(["bottle", "tobacco", "miochul", "wash"] as DriverCategory[]).map((c) => {
                 const on = driverCategory === c;
                 return (
                   <Pressable
                     key={c}
                     onPress={() => setDriverCategory(c)}
-                    style={[
-                      styles.catPill,
-                      {
-                        borderColor: on ? categoryColor(c) : THEME.border,
-                        backgroundColor: on ? THEME.soft : THEME.surface,
-                      },
-                    ]}
+                    style={[styles.catPill, on && { borderColor: categoryColor(c), backgroundColor: categoryColor(c) + "18" }]}
                   >
-                    <Text style={[styles.catPillText, { color: on ? categoryColor(c) : THEME.text }]}>
-                      {categoryLabel(c)}
-                    </Text>
+                    <Text style={[styles.catPillText, on && { color: categoryColor(c) }]}>{categoryLabel(c)}</Text>
                   </Pressable>
                 );
               })}
             </View>
 
-            {driverCategory === "wash" ? (
-              <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-                {[1, 2].map((stage) => {
+            {driverCategory === "wash" && (
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {([1, 2] as const).map((stage) => {
                   const on = washStage === stage;
                   return (
                     <Pressable
                       key={stage}
-                      onPress={() => setWashStage(stage as 1 | 2)}
-                      style={[
-                        styles.catPill,
-                        {
-                          borderColor: on ? categoryColor("wash") : THEME.border,
-                          backgroundColor: on ? THEME.soft : THEME.surface,
-                        },
-                      ]}
+                      onPress={() => setWashStage(stage)}
+                      style={[styles.catPill, on && { borderColor: "#0F766E", backgroundColor: "#F0FFFE" }]}
                     >
-                      <Text style={[styles.catPillText, { color: on ? categoryColor("wash") : THEME.text }]}>{`${stage}차`}</Text>
+                      <Text style={[styles.catPillText, on && { color: "#0F766E" }]}>{stage}차</Text>
                     </Pressable>
                   );
                 })}
               </View>
-            ) : null}
+            )}
 
-            <View style={{ height: 10 }} />
-
-            <Text style={styles.label}>날짜</Text>
-            <Pressable
-              onPress={openCalendar}
-              disabled={loading || busy}
-              style={[styles.field48, (loading || busy) && styles.dim]}
-            >
-              <View style={styles.fieldRow}>
-                <Ionicons name="calendar-outline" size={18} color={THEME.subtext} />
-                <Text style={styles.fieldText}>{dateStr}</Text>
-                <View style={{ flex: 1 }} />
-                <Ionicons name="chevron-down" size={16} color={THEME.muted} />
-              </View>
-            </Pressable>
-
-            <TouchableOpacity
-              onPress={() => fetchList()}
-              disabled={loading || busy}
-              style={[styles.btnWide, styles.btnPrimary, (loading || busy) && styles.dim, { marginTop: 10 }]}
-            >
-              <View style={styles.btnInner}>
-                <Ionicons name="search-outline" size={18} color="#fff" />
-                <Text style={styles.btnTextWhite}>{loading ? "조회중" : "조회"}</Text>
-              </View>
-            </TouchableOpacity>
-
-            {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+              <Pressable
+                onPress={openCalendar}
+                disabled={loading || busy}
+                style={[styles.datePicker, { flex: 1 }, (loading || busy) && styles.dim]}
+              >
+                <Ionicons name="calendar-outline" size={16} color={THEME.subtext} />
+                <Text style={styles.dateText}>{dateStr}</Text>
+                <Ionicons name="chevron-down" size={14} color={THEME.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => fetchList()}
+                disabled={loading || busy}
+                style={[styles.searchBtn, (loading || busy) && styles.dim]}
+              >
+                <Ionicons name="search-outline" size={16} color="#fff" />
+                <Text style={styles.searchBtnText}>조회</Text>
+              </Pressable>
+            </View>
           </View>
         ) : (
-          <>
-            {/* 필터 카드 */}
-            <View style={styles.card}>
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                {/* 날짜 */}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>날짜</Text>
-                  <Pressable
-                    onPress={openCalendar}
-                    disabled={loading || busy}
-                    style={[styles.field48, (loading || busy) && styles.dim]}
-                  >
-                    <View style={styles.fieldRow}>
-                      <Ionicons name="calendar-outline" size={18} color={THEME.subtext} />
-                      <Text style={styles.fieldText}>{dateStr}</Text>
-                      <View style={{ flex: 1 }} />
-                      <Ionicons name="chevron-down" size={16} color={THEME.muted} />
-                    </View>
+          <View style={styles.filterCard}>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                onPress={openCalendar}
+                disabled={loading || busy}
+                style={[styles.datePicker, { flex: 1 }, (loading || busy) && styles.dim]}
+              >
+                <Ionicons name="calendar-outline" size={16} color={THEME.subtext} />
+                <Text style={styles.dateText}>{dateStr}</Text>
+                <Ionicons name="chevron-down" size={14} color={THEME.muted} />
+              </Pressable>
+
+              <Pressable
+                onPress={openInspectModal}
+                disabled={loading || busy}
+                style={[styles.datePicker, { flex: 1.2 }, selectedStore && styles.datePickerActive, (loading || busy) && styles.dim]}
+              >
+                <MaterialCommunityIcons
+                  name={selectedStore ? "store-check-outline" : "store-search-outline"}
+                  size={16}
+                  color={selectedStore ? THEME.blue : THEME.subtext}
+                />
+                <Text style={[styles.dateText, !selectedStore && { color: THEME.muted }]} numberOfLines={1}>
+                  {selectedStore ? selectedStore.store_code : "점포 선택"}
+                </Text>
+                {selectedStore ? (
+                  <Pressable onPress={() => setSelectedStore(null)} hitSlop={8} disabled={loading || busy}>
+                    <Ionicons name="close-circle" size={15} color={THEME.danger} />
                   </Pressable>
-                </View>
-
-                {/* 검수점포 */}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>검수점포</Text>
-                  <Pressable
-                    onPress={openInspectModal}
-                    disabled={loading || busy}
-                    style={[
-                      styles.field48,
-                      styles.inspectField,
-                      (loading || busy) && styles.dim,
-                      selectedStore ? styles.inspectFieldSelected : null,
-                    ]}
-                  >
-                    <View style={styles.fieldRow}>
-                      <MaterialCommunityIcons
-                        name={selectedStore ? "store-check-outline" : "store-search-outline"}
-                        size={20}
-                        color={selectedStore ? THEME.blue : THEME.text}
-                      />
-                      <Text
-                        style={[styles.fieldText, { flex: 1 }, !selectedStore ? { color: THEME.muted } : null]}
-                        numberOfLines={1}
-                      >
-                        {selectedStore ? buildStoreTitle(selectedStore, selectedStore.store_code, selectedStore.store_name) : "눌러서 점포 선택"}
-                      </Text>
-                      <Ionicons name="chevron-down" size={16} color={THEME.muted} />
-                    </View>
-                  </Pressable>
-
-                  {!!selectedStore && (
-                    <Pressable
-                      onPress={() => setSelectedStore(null)}
-                      disabled={loading || busy}
-                      style={[styles.clearLink, (loading || busy) && styles.dim]}
-                    >
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                        <Ionicons name="close-circle" size={15} color={THEME.danger} />
-                        <Text style={styles.clearText}>선택 해제</Text>
-                      </View>
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-
-              {/* 검색점포 + 버튼 */}
-              <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>검색점포</Text>
-
-                  <View style={styles.textInputWrap}>
-                    <Ionicons name="search-outline" size={18} color={THEME.subtext} />
-                    <TextInput
-                      value={searchText}
-                      onChangeText={setSearchText}
-                      placeholder="점포코드 또는 점포명"
-                      placeholderTextColor={THEME.muted}
-                      style={styles.textInput}
-                      returnKeyType="search"
-                      onSubmitEditing={() => fetchList()}
-                    />
-                    {searchText.length > 0 && (
-                      <Pressable onPress={() => setSearchText("")} style={{ padding: 6 }} hitSlop={8}>
-                        <Ionicons name="close-circle" size={18} color={THEME.muted} />
-                      </Pressable>
-                    )}
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => fetchList()}
-                  disabled={loading || busy}
-                  style={[styles.btn, styles.btnPrimary, (loading || busy) && styles.dim]}
-                >
-                  <View style={styles.btnInner}>
-                    <Ionicons name="search-outline" size={18} color="#fff" />
-                    <Text style={styles.btnTextWhite}>{loading ? "조회중" : "조회"}</Text>
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={enterOrExitSelectMode}
-                  disabled={loading || busy}
-                  style={[
-                    styles.btn,
-                    styles.btnOutline,
-                    (loading || busy) && styles.dim,
-                    selectMode && { backgroundColor: THEME.blueSoft, borderColor: "rgba(37,99,235,0.35)" },
-                  ]}
-                >
-                  <View style={styles.btnInner}>
-                    <Ionicons name="checkbox-outline" size={18} color={THEME.text} />
-                    <Text style={styles.btnText}>선택 {selectedIds.size}</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-
-              {selectMode && (
-                <TouchableOpacity
-                  onPress={deleteSelected}
-                  disabled={selectedIds.size === 0 || busy || loading}
-                  style={[
-                    styles.btnWide,
-                    styles.btnDangerOutline,
-                    (selectedIds.size === 0 || busy || loading) && { opacity: 0.35 },
-                  ]}
-                >
-                  <View style={styles.btnInner}>
-                    <Ionicons name="trash-outline" size={18} color={THEME.danger} />
-                    <Text style={styles.btnTextDanger}>선택 삭제</Text>
-                  </View>
-                </TouchableOpacity>
-              )}
-
-              {loading && <ActivityIndicator style={{ marginTop: 10 }} />}
+                ) : (
+                  <Ionicons name="chevron-down" size={14} color={THEME.muted} />
+                )}
+              </Pressable>
             </View>
-          </>
+
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+              <View style={[styles.searchInputWrap, { flex: 1 }]}>
+                <Ionicons name="search-outline" size={16} color={THEME.subtext} />
+                <TextInput
+                  value={searchText}
+                  onChangeText={setSearchText}
+                  placeholder="점포코드 / 점포명 검색"
+                  placeholderTextColor={THEME.muted}
+                  style={{ flex: 1, color: THEME.text, fontWeight: "800", fontSize: 13, paddingVertical: 0 }}
+                  returnKeyType="search"
+                  onSubmitEditing={() => fetchList()}
+                />
+                {searchText.length > 0 && (
+                  <Pressable onPress={() => setSearchText("")} hitSlop={8}>
+                    <Ionicons name="close-circle" size={16} color={THEME.muted} />
+                  </Pressable>
+                )}
+              </View>
+              <Pressable
+                onPress={() => fetchList()}
+                disabled={loading || busy}
+                style={[styles.searchBtn, (loading || busy) && styles.dim]}
+              >
+                {loading
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Ionicons name="search-outline" size={16} color="#fff" />}
+                <Text style={styles.searchBtnText}>{loading ? "조회중" : "조회"}</Text>
+              </Pressable>
+            </View>
+
+            {selectMode && (
+              <Pressable
+                onPress={deleteSelected}
+                disabled={selectedIds.size === 0 || busy || loading}
+                style={[styles.deletePill, (selectedIds.size === 0 || busy || loading) && { opacity: 0.35 }]}
+              >
+                <Ionicons name="trash-outline" size={15} color={THEME.danger} />
+                <Text style={{ fontWeight: "900", color: THEME.danger, fontSize: 13 }}>선택 삭제 ({selectedIds.size}개)</Text>
+              </Pressable>
+            )}
+          </View>
         )}
       </View>
 
-      {/* 리스트 */}
-      <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: bottomPad }}>
-        <View style={[styles.listBox, { flex: 1 }]}>
-          <FlatList
-            data={groupedByStore}
-            keyExtractor={(g) => g.store_code}
-            keyboardShouldPersistTaps="handled"
-            ListEmptyComponent={
-              <View style={{ padding: 16 }}>
-                <View style={styles.emptyTitleRow}>
-                  <Ionicons name="information-circle-outline" size={18} color={THEME.subtext} />
-                  <Text style={styles.emptyTitle}>조회 결과가 없습니다.</Text>
+      {/* 사진 목록 */}
+      <FlatList
+        data={groupedByStore}
+        keyExtractor={(g) => g.store_code}
+        keyboardShouldPersistTaps="handled"
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: bottomPad, gap: 8 }}
+        ListEmptyComponent={
+          !loading ? (
+            <View style={styles.emptyWrap}>
+              <Ionicons name="images-outline" size={44} color={THEME.muted} />
+              <Text style={styles.emptyText}>조회된 사진이 없습니다</Text>
+              <Text style={{ color: THEME.muted, fontSize: 12, marginTop: 2 }}>날짜나 필터를 변경 후 조회하세요</Text>
+            </View>
+          ) : null
+        }
+        renderItem={({ item }) => {
+          const meta = storeMeta[item.store_code];
+          const first = item.items[0];
+          const timeStr = first?.created_at ? formatKST(first.created_at) : "-";
+          const count = item.items.length;
+          const groupSelectedCount = item.items.reduce((acc, p) => (selectedIds.has(p.id) ? acc + 1 : acc), 0);
+          const groupAllSelected = groupSelectedCount === count && count > 0;
+          const title = buildStoreTitle(meta, item.store_code, first?.store_name ?? "");
+
+          return (
+            <Pressable
+              onPress={() => {
+                Keyboard.dismiss();
+                if (selectMode) {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (groupAllSelected) for (const p of item.items) next.delete(p.id);
+                    else for (const p of item.items) next.add(p.id);
+                    return next;
+                  });
+                } else {
+                  openPreviewForStore(item.store_code);
+                }
+              }}
+              style={[
+                styles.listRow,
+                selectMode && groupSelectedCount > 0 && { backgroundColor: THEME.blueSoft, borderColor: "rgba(37,99,235,0.25)" },
+              ]}
+            >
+              <View style={styles.thumbWrap}>
+                {first && !String(first.original_url).startsWith("meta://") ? (
+                  <Image source={{ uri: getImageUrl(first) }} style={styles.thumb} />
+                ) : (
+                  <View style={[styles.thumb, { alignItems: "center", justifyContent: "center" }]}>
+                    <Ionicons name="image-outline" size={22} color={THEME.muted} />
+                  </View>
+                )}
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{count}</Text>
                 </View>
               </View>
-            }
-            renderItem={({ item }) => {
-              const meta = storeMeta[item.store_code];
-              const first = item.items[0];
-              const timeStr = first?.created_at ? formatKST(first.created_at) : "-";
-              const count = item.items.length;
 
-              const groupSelectedCount = item.items.reduce((acc, p) => (selectedIds.has(p.id) ? acc + 1 : acc), 0);
-              const groupAllSelected = groupSelectedCount === count && count > 0;
-
-              const title = buildStoreTitle(meta, item.store_code, first?.store_name ?? "");
-
-              // ✅ 기사면: 카테고리 pill 표시(현재 탭이지만 UI 명확하게)
-              const catLabel = isDriver ? driverDisplayCategory : "";
-
-              return (
-                <Pressable
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    if (selectMode) {
-                      setSelectedIds((prev) => {
-                        const next = new Set(prev);
-                        if (groupAllSelected) for (const p of item.items) next.delete(p.id);
-                        else for (const p of item.items) next.add(p.id);
-                        return next;
-                      });
-                    } else {
-                      openPreviewForStore(item.store_code);
-                    }
-                  }}
-                  style={[styles.row, selectMode && groupSelectedCount > 0 && { backgroundColor: THEME.blueSoft }]}
-                >
-                  <View style={styles.thumbWrap}>
-                    {first ? (
-                      <Image source={{ uri: getImageUrl(first) }} style={styles.thumb} />
-                    ) : (
-                      <View style={styles.thumbEmpty}>
-                        <Ionicons name="image-outline" size={20} color={THEME.muted} />
-                      </View>
-                    )}
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={styles.rowTitle} numberOfLines={2}>{title}</Text>
+                <Text style={styles.rowSub}>{timeStr}</Text>
+                {isDriver && (
+                  <View style={[styles.catBadge, { borderColor: categoryColor(driverCategory), backgroundColor: categoryColor(driverCategory) + "14" }]}>
+                    <Text style={[styles.catBadgeText, { color: categoryColor(driverCategory) }]}>{driverDisplayCategory}</Text>
                   </View>
-
-                  <View style={styles.rowTextWrap}>
-                    <Text style={styles.rowTitleStrong} numberOfLines={2}>
-                      {title}
-                    </Text>
-                    <Text style={styles.rowSub}>업로드 : {timeStr}</Text>
-
-                    {isDriver ? (
-                      <View style={[styles.catBadge, { borderColor: categoryColor(driverCategory) }]}>
-                        <Text style={[styles.catBadgeText, { color: categoryColor(driverCategory) }]}>{catLabel}</Text>
-                      </View>
-                    ) : null}
-
-                    {selectMode && (
-                      <View style={styles.selectPill}>
-                        <Ionicons
-                          name={groupAllSelected ? "checkmark-circle" : "ellipse-outline"}
-                          size={14}
-                          color={THEME.blue}
-                        />
-                        <Text style={styles.selectInfo}>
-                          선택됨: {groupSelectedCount} / {count}
-                        </Text>
-                      </View>
-                    )}
+                )}
+                {selectMode && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                    <Ionicons name={groupAllSelected ? "checkmark-circle" : "ellipse-outline"} size={14} color={THEME.blue} />
+                    <Text style={{ fontSize: 11, color: THEME.blue, fontWeight: "800" }}>{groupSelectedCount}/{count} 선택</Text>
                   </View>
+                )}
+              </View>
 
-                  <View style={styles.rightCol}>
-                    <View style={styles.countPill}>
-                      <Ionicons name="images-outline" size={14} color={THEME.subtext} />
-                      <Text style={styles.countText}>{count}</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={THEME.muted} />
-                  </View>
-                </Pressable>
-              );
-            }}
-          />
-        </View>
+              <Ionicons name="chevron-forward" size={18} color={THEME.muted} />
+            </Pressable>
+          );
+        }}
+      />
 
-      </View>
-
-      {/* 미리보기 */}
+      {/* 미리보기 모달 */}
       <Modal
         visible={previewOpen}
         animationType="slide"
@@ -1326,17 +1233,12 @@ export default function PhotoListScreen() {
         presentationStyle="fullScreen"
       >
         <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-          <View style={[styles.previewHeader, { paddingTop: topPad + 10 }]}>
+          <View style={[styles.previewHeader, { paddingTop: topPad + 8 }]}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.previewTitleOneLine} numberOfLines={1}>
-                {previewTitle}
-              </Text>
-              <Text style={styles.previewSub} numberOfLines={1}>
-                {previewItems.length}장 · 저장/삭제
-              </Text>
+              <Text style={styles.previewTitle} numberOfLines={1}>{previewTitle}</Text>
+              <Text style={styles.previewSub}>{previewItems.length}장 · 저장 / 삭제</Text>
             </View>
-
-            <Pressable onPress={() => setPreviewOpen(false)} style={styles.headerIconBtn}>
+            <Pressable onPress={() => setPreviewOpen(false)} style={styles.headerBtn}>
               <Ionicons name="close" size={18} color={THEME.text} />
             </Pressable>
           </View>
@@ -1344,80 +1246,80 @@ export default function PhotoListScreen() {
           <FlatList
             data={previewItems}
             keyExtractor={(p) => p.id}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: bottomPad, gap: 10 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: bottomPad, gap: 12 }}
             renderItem={({ item }) => {
               const isMio = String(item.category ?? "") === "miochul";
               const isMetaOnly = String(item.original_url ?? "").startsWith("meta://");
+              const nonMetaItems = previewItems.filter((p) => !String(p.original_url).startsWith("meta://"));
               return (
                 <View style={styles.previewCard}>
-                  <View style={styles.previewTopRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.previewTime}>{formatKST(item.created_at)}</Text>
-
-                      {isDriver ? (
-                        <Text style={styles.previewTag}>
-                          분류: {driverDisplayCategory}
-                          {isMio ? ` · 납품예정일: ${item.delivery_planned_date ?? "-"}` : ""}
-                        </Text>
-                      ) : (
-                        !!item.work_part && <Text style={styles.previewTag}>작업파트: {item.work_part}</Text>
-                      )}
-
-                      {/* ✅ 미오출이면 추가내용 노출 */}
-                      {isMio ? (
-                        <Text style={styles.previewMioNote} numberOfLines={5}>
-                          추가내용: {item.extra_note ?? "-"}
-                        </Text>
-                      ) : null}
-                    </View>
-
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <Pressable
-                        onPress={() => saveToGalleryOne(item.original_url)}
-                        disabled={busy || isMetaOnly}
-                        style={[styles.smallBtn, (busy || isMetaOnly) && { opacity: 0.6 }]}
-                        hitSlop={8}
-                      >
-                        <Ionicons name="download-outline" size={16} color={THEME.text} />
-                        <Text style={styles.smallBtnText}>저장</Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => onDeleteOne(item)}
-                        disabled={busy}
-                        style={[styles.smallDangerBtn, busy && { opacity: 0.6 }]}
-                        hitSlop={8}
-                      >
-                        <Ionicons name="trash-outline" size={16} color={THEME.danger} />
-                        <Text style={styles.smallDangerText}>삭제</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-
-                  <View style={{ height: 10 }} />
-
                   {isMetaOnly ? (
                     <View style={[styles.previewImage, { alignItems: "center", justifyContent: "center", backgroundColor: THEME.soft }]}>
-                      <Text style={{ color: THEME.subtext, fontWeight: "700" }}>사진 없이 저장된 미오출입니다.</Text>
+                      <Ionicons name="image-outline" size={32} color={THEME.muted} />
+                      <Text style={{ color: THEME.subtext, fontWeight: "700", marginTop: 8, fontSize: 13 }}>사진 없이 저장된 미오출</Text>
                     </View>
                   ) : (
-                    <Pressable onPress={() => {
-                      setLightboxIndex(previewItems.filter((p) => !String(p.original_url).startsWith("meta://")).indexOf(item));
-                      setLightboxOpen(true);
-                    }}>
+                    <Pressable
+                      onPress={() => {
+                        setLightboxIndex(nonMetaItems.indexOf(item));
+                        setLightboxOpen(true);
+                      }}
+                    >
                       <Image source={{ uri: getImageUrl(item) }} style={styles.previewImage} resizeMode="contain" />
                       <View style={styles.zoomHint}>
-                        <Ionicons name="expand-outline" size={14} color="#fff" />
-                        <Text style={styles.zoomHintText}>눌러서 전체화면</Text>
+                        <Ionicons name="expand-outline" size={12} color="#fff" />
+                        <Text style={styles.zoomHintText}>전체화면</Text>
                       </View>
                     </Pressable>
                   )}
+
+                  <View style={{ padding: 12, gap: 6 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <Text style={{ fontWeight: "800", color: THEME.text, fontSize: 13, flex: 1 }} numberOfLines={1}>
+                        {formatKST(item.created_at)}
+                      </Text>
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        <Pressable
+                          onPress={() => saveToGalleryOne(item.original_url)}
+                          disabled={busy || isMetaOnly}
+                          style={[styles.actionPill, (busy || isMetaOnly) && { opacity: 0.4 }]}
+                        >
+                          <Ionicons name="download-outline" size={14} color={THEME.text} />
+                          <Text style={{ fontWeight: "800", fontSize: 12, color: THEME.text }}>저장</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => onDeleteOne(item)}
+                          disabled={busy}
+                          style={[styles.actionPillDanger, busy && { opacity: 0.4 }]}
+                        >
+                          <Ionicons name="trash-outline" size={14} color={THEME.danger} />
+                          <Text style={{ fontWeight: "800", fontSize: 12, color: THEME.danger }}>삭제</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+
+                    {isDriver ? (
+                      <Text style={{ color: THEME.subtext, fontSize: 12, fontWeight: "700" }}>
+                        {driverDisplayCategory}{isMio ? ` · 납품예정: ${item.delivery_planned_date ?? "-"}` : ""}
+                      </Text>
+                    ) : (
+                      !!item.work_part && (
+                        <Text style={{ color: THEME.subtext, fontSize: 12, fontWeight: "700" }}>파트: {item.work_part}</Text>
+                      )
+                    )}
+
+                    {isMio && item.extra_note ? (
+                      <Text style={{ color: THEME.text, fontSize: 12, fontWeight: "700", lineHeight: 16 }}>
+                        메모: {item.extra_note}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
               );
             }}
             ListEmptyComponent={
-              <View style={{ padding: 16 }}>
-                <Text style={{ color: THEME.subtext }}>미리보기 데이터가 없습니다.</Text>
+              <View style={styles.emptyWrap}>
+                <Text style={styles.emptyText}>미리보기 데이터가 없습니다</Text>
               </View>
             }
           />
@@ -1432,47 +1334,34 @@ export default function PhotoListScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* 달력 */}
+      {/* 달력 모달 */}
       <Modal visible={calendarOpen} transparent animationType="fade" onRequestClose={() => setCalendarOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setCalendarOpen(false)} />
-
-        <View style={[styles.modalBox, { top: topPad + 84 }]}>
-          <View style={styles.modalHeader}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Pressable onPress={() => setCalendarMonth((prev) => addMonthsFirstDay(prev, -1))} style={styles.iconBtn}>
-                <Ionicons name="chevron-back" size={18} color={THEME.text} />
-              </Pressable>
-
-              <Text style={styles.modalTitle}>{ymLabel(calendarMonth)}</Text>
-
-              <Pressable onPress={() => setCalendarMonth((prev) => addMonthsFirstDay(prev, 1))} style={styles.iconBtn}>
-                <Ionicons name="chevron-forward" size={18} color={THEME.text} />
-              </Pressable>
-            </View>
-
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Pressable onPress={() => pickDateAndFetch(kstNowDateString())} style={styles.todayBtn}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Ionicons name="today-outline" size={16} color={THEME.blue} />
-                  <Text style={styles.todayText}>오늘</Text>
-                </View>
-              </Pressable>
-
-              <Pressable onPress={() => setCalendarOpen(false)} style={styles.iconBtn}>
-                <Ionicons name="close" size={18} color={THEME.text} />
-              </Pressable>
-            </View>
+        <View style={[styles.calendarBox, { top: topPad + 80 }]}>
+          <View style={styles.calendarHeader}>
+            <Pressable onPress={() => setCalendarMonth((prev) => addMonthsFirstDay(prev, -1))} style={styles.iconBtn}>
+              <Ionicons name="chevron-back" size={18} color={THEME.text} />
+            </Pressable>
+            <Text style={{ fontWeight: "900", color: THEME.text, fontSize: 15 }}>{ymLabel(calendarMonth)}</Text>
+            <Pressable onPress={() => setCalendarMonth((prev) => addMonthsFirstDay(prev, 1))} style={styles.iconBtn}>
+              <Ionicons name="chevron-forward" size={18} color={THEME.text} />
+            </Pressable>
+            <View style={{ flex: 1 }} />
+            <Pressable onPress={() => pickDateAndFetch(kstNowDateString())} style={styles.todayBtn}>
+              <Ionicons name="today-outline" size={14} color={THEME.blue} />
+              <Text style={{ fontWeight: "900", color: THEME.blue, fontSize: 13 }}>오늘</Text>
+            </Pressable>
+            <Pressable onPress={() => setCalendarOpen(false)} style={styles.iconBtn}>
+              <Ionicons name="close" size={18} color={THEME.text} />
+            </Pressable>
           </View>
-
           <Calendar
             key={calendarMonth}
             current={calendarMonth}
             enableSwipeMonths
             hideArrows
             renderHeader={() => null}
-            markedDates={{
-              [dateStr]: { selected: true, selectedColor: THEME.blue },
-            }}
+            markedDates={{ [dateStr]: { selected: true, selectedColor: THEME.blue } }}
             theme={{
               todayTextColor: THEME.blue,
               textDayFontWeight: "700",
@@ -1485,51 +1374,47 @@ export default function PhotoListScreen() {
         </View>
       </Modal>
 
-      {/* 검수점포 모달 (기사 모드에서는 안 쓰지만, 기존 유지) */}
+      {/* 검수점포 모달 */}
       <Modal visible={inspectModalOpen} transparent animationType="fade" onRequestClose={() => setInspectModalOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setInspectModalOpen(false)} />
-
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={[styles.inspectWrap, { top: topPad + 60 }]}
+          style={[styles.inspectWrap, { top: topPad + 56 }]}
         >
           <View style={styles.inspectBox}>
             <View style={styles.inspectHeader}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                <MaterialCommunityIcons name="store-search-outline" size={18} color={THEME.text} />
-                <Text style={styles.inspectTitle}>검수점포 선택</Text>
-              </View>
-
+              <MaterialCommunityIcons name="store-search-outline" size={18} color={THEME.text} />
+              <Text style={{ fontWeight: "900", fontSize: 14, color: THEME.text, flex: 1 }}>검수점포 선택</Text>
               <Pressable onPress={() => setInspectModalOpen(false)} style={styles.iconBtn}>
                 <Ionicons name="close" size={18} color={THEME.text} />
               </Pressable>
             </View>
 
-            <View style={styles.searchWrap}>
-              <Ionicons name="search-outline" size={18} color={THEME.subtext} />
+            <View style={styles.inspectSearch}>
+              <Ionicons name="search-outline" size={16} color={THEME.subtext} />
               <TextInput
                 value={inspectQuery}
                 onChangeText={setInspectQuery}
-                placeholder="검색: 점포코드/점포명/호차/순번"
+                placeholder="점포코드 / 점포명 / 호차 / 순번"
                 placeholderTextColor={THEME.muted}
-                style={styles.searchInput}
+                style={{ flex: 1, color: THEME.text, fontWeight: "800", fontSize: 13 }}
               />
               {inspectQuery.length > 0 && (
-                <Pressable onPress={() => setInspectQuery("")} style={{ padding: 6 }}>
-                  <Ionicons name="close-circle" size={18} color={THEME.muted} />
+                <Pressable onPress={() => setInspectQuery("")} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={THEME.muted} />
                 </Pressable>
               )}
             </View>
 
-            <View style={styles.inspectCols}>
-              <Text style={[styles.colHead, { width: 52 }]}>호차</Text>
-              <Text style={[styles.colHead, { width: 52 }]}>순번</Text>
+            <View style={{ flexDirection: "row", paddingHorizontal: 12, paddingBottom: 8 }}>
+              <Text style={[styles.colHead, { width: 48 }]}>호차</Text>
+              <Text style={[styles.colHead, { width: 48 }]}>순번</Text>
               <Text style={[styles.colHead, { flex: 1 }]}>점포코드 / 점포명</Text>
-              {inspectLoading && <ActivityIndicator style={{ marginLeft: 8 }} />}
+              {inspectLoading && <ActivityIndicator size="small" />}
             </View>
 
             {inspectLoading ? (
-              <View style={{ padding: 16 }}>
+              <View style={{ padding: 20, alignItems: "center" }}>
                 <ActivityIndicator />
               </View>
             ) : (
@@ -1539,7 +1424,6 @@ export default function PhotoListScreen() {
                 keyboardShouldPersistTaps="handled"
                 renderItem={({ item }) => {
                   const isSelected = selectedStore?.store_code === item.store_code;
-
                   return (
                     <Pressable
                       onPress={() => {
@@ -1550,25 +1434,17 @@ export default function PhotoListScreen() {
                           seq_no: item.seq_no ?? null,
                         });
                         setInspectModalOpen(false);
-                        Alert.alert("선택 완료", `${item.store_code} ${item.store_name}`);
                       }}
-                      style={[
-                        styles.inspectRow,
-                        isSelected ? { backgroundColor: THEME.blueSoft, borderTopColor: "rgba(37,99,235,0.18)" } : null,
-                      ]}
+                      style={[styles.inspectRow, isSelected && { backgroundColor: THEME.blueSoft }]}
                     >
-                      <Text style={[styles.cell, { width: 52 }]}>{item.car_no ?? "-"}</Text>
-                      <Text style={[styles.cell, { width: 52 }]}>{item.seq_no ?? "-"}</Text>
-
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.cellStrong} numberOfLines={1}>
-                          {item.store_code} <Text style={styles.cellName}>{item.store_name}</Text>
-                        </Text>
-                      </View>
-
+                      <Text style={[styles.colCell, { width: 48 }]}>{item.car_no ?? "-"}</Text>
+                      <Text style={[styles.colCell, { width: 48 }]}>{item.seq_no ?? "-"}</Text>
+                      <Text style={[styles.colCell, { flex: 1 }]} numberOfLines={1}>
+                        <Text style={{ fontWeight: "900" }}>{item.store_code}</Text>{"  "}{item.store_name}
+                      </Text>
                       <Ionicons
                         name={isSelected ? "checkmark-circle" : "chevron-forward"}
-                        size={18}
+                        size={16}
                         color={isSelected ? THEME.blue : THEME.muted}
                       />
                     </Pressable>
@@ -1591,349 +1467,163 @@ export default function PhotoListScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: THEME.bg },
 
-  headerWrap: { paddingHorizontal: 16, paddingBottom: 10 },
-  headerTopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headerTitleLeft: { fontSize: 24, fontWeight: "900", color: THEME.text, letterSpacing: -0.4 },
-
-  h1: { marginTop: 10, fontSize: 20, fontWeight: "900", color: THEME.text, letterSpacing: -0.2 },
-  h2: { marginTop: 6, color: THEME.subtext, lineHeight: 18, fontSize: 13 },
-
-  badgeRow: { marginTop: 10, flexDirection: "row", gap: 8 },
-  badge: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  badgeText: { color: THEME.subtext, fontWeight: "800", fontSize: 12 },
-
-  miniToggleCard: {
+  headerWrap: { paddingHorizontal: 16, paddingBottom: 12 },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerTitle: { fontSize: 24, fontWeight: "900", color: THEME.text, letterSpacing: -0.4 },
+  headerBtn: {
+    width: 40, height: 40, borderRadius: 14,
+    borderWidth: 1, borderColor: THEME.border,
     backgroundColor: THEME.surface,
-    borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    minHeight: 48,
+    alignItems: "center", justifyContent: "center",
   },
-  miniToggleTitle: { fontWeight: "900", color: THEME.text, fontSize: 13 },
-  miniToggleSub: { color: THEME.subtext, fontSize: 11, marginLeft: 24 },
+  headerBtnActive: { backgroundColor: THEME.blueSoft, borderColor: THEME.blue },
 
-  card: {
+  dim: { opacity: 0.55 },
+
+  filterCard: {
     backgroundColor: THEME.surface,
     borderRadius: 18,
     padding: 14,
     borderWidth: 1,
     borderColor: THEME.border,
-    shadowColor: THEME.shadow as any,
-    shadowOpacity: 1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
     gap: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
 
-  label: { fontSize: 12, fontWeight: "900", color: "#374151", marginBottom: 6 },
-
-  field48: {
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 14,
-    height: 48,
-    justifyContent: "center",
-    paddingHorizontal: 12,
+  datePicker: {
+    height: 48, borderWidth: 1, borderColor: THEME.border,
+    borderRadius: 14, paddingHorizontal: 12,
     backgroundColor: THEME.soft,
+    flexDirection: "row", alignItems: "center", gap: 8,
   },
-  fieldRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  fieldText: { fontWeight: "900", color: THEME.text, fontSize: 13 },
+  datePickerActive: { borderColor: THEME.blue, backgroundColor: THEME.blueSoft },
+  dateText: { fontWeight: "800", color: THEME.text, fontSize: 13, flex: 1 },
 
-  inspectField: { borderColor: "rgba(37,99,235,0.22)", backgroundColor: THEME.blueSoft },
-  inspectFieldSelected: { backgroundColor: "#FFFFFF", borderColor: "rgba(37,99,235,0.32)" },
-
-  clearLink: { marginTop: 8, alignSelf: "flex-end" },
-  clearText: { fontWeight: "900", color: THEME.danger, fontSize: 12 },
-
-  textInputWrap: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 14,
-    paddingHorizontal: 12,
+  searchInputWrap: {
+    height: 48, borderWidth: 1, borderColor: THEME.border,
+    borderRadius: 14, paddingHorizontal: 12,
     backgroundColor: THEME.soft,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    flexDirection: "row", alignItems: "center", gap: 8,
   },
-  textInput: { flex: 1, color: THEME.text, fontWeight: "900", fontSize: 13, paddingVertical: 0 },
+  searchBtn: {
+    height: 48, paddingHorizontal: 18, borderRadius: 14,
+    backgroundColor: THEME.primary,
+    flexDirection: "row", alignItems: "center", gap: 6,
+  },
+  searchBtnText: { color: "#fff", fontWeight: "900", fontSize: 13 },
 
-  btn: { height: 48, paddingHorizontal: 14, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  btnWide: { height: 48, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  btnInner: { flexDirection: "row", alignItems: "center", gap: 8 },
-  btnPrimary: { backgroundColor: THEME.primary },
-  btnOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: THEME.primary },
-  btnDangerOutline: { backgroundColor: THEME.surface, borderWidth: 1, borderColor: "#FCA5A5" },
-
-  btnTextWhite: { color: "#fff", fontWeight: "900", fontSize: 13 },
-  btnText: { color: THEME.text, fontWeight: "900", fontSize: 13 },
-  btnTextDanger: { color: THEME.danger, fontWeight: "900", fontSize: 13 },
-
-  dim: { opacity: 0.65 },
-
-  listBox: {
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 18,
-    overflow: "hidden",
-    backgroundColor: THEME.surface,
+  deletePill: {
+    height: 44, paddingHorizontal: 16, borderRadius: 12,
+    borderWidth: 1, borderColor: "#FCA5A5",
+    backgroundColor: THEME.dangerSoft,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
   },
 
-  row: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F3F4F6",
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "center",
-    backgroundColor: THEME.surface,
-  },
+  catPill: { flex: 1, height: 40, borderRadius: 12, borderWidth: 1, borderColor: THEME.border, alignItems: "center", justifyContent: "center" },
+  catPillText: { fontWeight: "900", fontSize: 13, color: THEME.text },
 
-  thumbWrap: { width: 64, height: 64, borderRadius: 16, overflow: "hidden", backgroundColor: "#F3F4F6" },
+  listRow: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: THEME.surface, borderRadius: 16,
+    padding: 12, borderWidth: 1, borderColor: THEME.border,
+  },
+  thumbWrap: { width: 72, height: 72, borderRadius: 14, overflow: "hidden", position: "relative", backgroundColor: "#F3F4F6" },
   thumb: { width: "100%", height: "100%" },
-  thumbEmpty: { flex: 1, alignItems: "center", justifyContent: "center" },
-
-  rowTextWrap: { flex: 1, gap: 6 },
-  rowTitleStrong: { fontWeight: "950" as any, fontSize: 13, color: THEME.text, lineHeight: 18 },
-  rowSub: { color: THEME.subtext, fontSize: 12, lineHeight: 16 },
-
-  catBadge: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    backgroundColor: THEME.soft,
+  countBadge: {
+    position: "absolute", bottom: 4, right: 4,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2,
   },
-  catBadgeText: { fontWeight: "900", fontSize: 12 },
+  countBadgeText: { color: "#fff", fontWeight: "900", fontSize: 11 },
+  rowTitle: { fontWeight: "900", fontSize: 13, color: THEME.text, lineHeight: 18 },
+  rowSub: { color: THEME.subtext, fontSize: 12 },
+  catBadge: { alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
+  catBadgeText: { fontWeight: "900", fontSize: 11 },
 
-  selectPill: {
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  selectInfo: { fontWeight: "900", color: THEME.text, fontSize: 12 },
-
-  rightCol: { alignItems: "flex-end", justifyContent: "space-between", height: 64, paddingVertical: 2 },
-
-  countPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: THEME.soft,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  countText: { fontWeight: "900", color: THEME.text, fontSize: 12 },
-
-  hint: { color: THEME.muted, marginTop: 10, fontSize: 11, lineHeight: 15 },
-
-  emptyTitleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  emptyTitle: { color: THEME.subtext, fontWeight: "900", fontSize: 13 },
-
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  emptyWrap: { alignItems: "center", justifyContent: "center", paddingVertical: 60, gap: 8 },
+  emptyText: { color: THEME.subtext, fontWeight: "800", fontSize: 15 },
 
   previewHeader: {
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
+    paddingHorizontal: 16, paddingBottom: 12,
+    flexDirection: "row", alignItems: "center", gap: 10,
   },
-  previewTitleOneLine: { fontSize: 17, fontWeight: "950" as any, color: THEME.text, lineHeight: 22 },
-  previewSub: { marginTop: 4, color: THEME.subtext, fontWeight: "800", fontSize: 12 },
-
-  headerIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    backgroundColor: THEME.surface,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
+  previewTitle: { fontSize: 17, fontWeight: "900", color: THEME.text },
+  previewSub: { color: THEME.subtext, fontSize: 12, fontWeight: "700", marginTop: 2 },
   previewCard: {
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 18,
-    padding: 12,
-    backgroundColor: THEME.surface,
-    shadowColor: THEME.shadow as any,
-    shadowOpacity: 1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+    borderRadius: 18, borderWidth: 1, borderColor: THEME.border,
+    backgroundColor: THEME.surface, overflow: "hidden",
+    shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 }, elevation: 1,
   },
-  previewTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
-  previewTime: { fontWeight: "950" as any, color: THEME.text, fontSize: 12 },
-  previewTag: { marginTop: 6, color: THEME.subtext, fontWeight: "800", fontSize: 12 },
-  previewMioNote: { marginTop: 8, color: THEME.text, fontWeight: "800", fontSize: 12, lineHeight: 16 },
-
-  smallBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    backgroundColor: THEME.soft,
-  },
-  smallBtnText: { fontWeight: "950" as any, color: THEME.text, fontSize: 12 },
-
-  smallDangerBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#FCA5A5",
-    backgroundColor: THEME.dangerSoft,
-  },
-  smallDangerText: { fontWeight: "950" as any, color: THEME.danger, fontSize: 12 },
-
-  previewImage: { width: "100%", aspectRatio: 4 / 3, borderRadius: 16, backgroundColor: "#F3F4F6" },
+  previewImage: { width: "100%", aspectRatio: 4 / 3, backgroundColor: "#F3F4F6" },
   zoomHint: {
-    position: "absolute",
-    bottom: 8,
-    right: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
+    position: "absolute", bottom: 8, right: 8,
+    flexDirection: "row", alignItems: "center", gap: 4,
     backgroundColor: "rgba(0,0,0,0.45)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999,
   },
   zoomHintText: { color: "#fff", fontSize: 11, fontWeight: "700" },
-
-  modalBox: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    backgroundColor: THEME.surface,
-    borderRadius: 18,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: THEME.border,
+  actionPill: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, borderWidth: 1, borderColor: THEME.border, backgroundColor: THEME.soft,
   },
-  modalHeader: {
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.border,
+  actionPillDanger: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, borderWidth: 1, borderColor: "#FCA5A5", backgroundColor: THEME.dangerSoft,
+  },
+
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  calendarBox: {
+    position: "absolute", left: 16, right: 16,
+    backgroundColor: THEME.surface, borderRadius: 18,
+    overflow: "hidden", borderWidth: 1, borderColor: THEME.border,
+  },
+  calendarHeader: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 10, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: THEME.border,
     backgroundColor: THEME.soft,
   },
-  modalTitle: { fontSize: 14, fontWeight: "900", color: THEME.text },
-
   iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    backgroundColor: THEME.surface,
-    alignItems: "center",
-    justifyContent: "center",
+    width: 36, height: 36, borderRadius: 12,
+    borderWidth: 1, borderColor: THEME.border, backgroundColor: THEME.surface,
+    alignItems: "center", justifyContent: "center",
   },
-
   todayBtn: {
-    height: 40,
-    paddingHorizontal: 10,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(37,99,235,0.22)",
+    height: 36, paddingHorizontal: 10, borderRadius: 12,
+    borderWidth: 1, borderColor: "rgba(37,99,235,0.22)",
     backgroundColor: THEME.blueSoft,
-    alignItems: "center",
-    justifyContent: "center",
+    flexDirection: "row", alignItems: "center", gap: 6,
   },
-  todayText: { fontWeight: "900", color: THEME.blue, fontSize: 13 },
 
   inspectWrap: { position: "absolute", left: 16, right: 16, maxHeight: "78%" },
   inspectBox: {
-    backgroundColor: THEME.surface,
-    borderRadius: 18,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: THEME.border,
+    backgroundColor: THEME.surface, borderRadius: 18,
+    overflow: "hidden", borderWidth: 1, borderColor: THEME.border,
   },
-
   inspectHeader: {
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingHorizontal: 12, paddingVertical: 12,
     backgroundColor: THEME.soft,
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.border,
+    borderBottomWidth: 1, borderBottomColor: THEME.border,
   },
-  inspectTitle: { fontSize: 14, fontWeight: "900", color: THEME.text },
-
-  searchWrap: {
-    margin: 12,
-    height: 48,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    borderRadius: 14,
-    paddingHorizontal: 12,
+  inspectSearch: {
+    margin: 12, height: 44, borderWidth: 1, borderColor: THEME.border,
+    borderRadius: 12, paddingHorizontal: 12,
     backgroundColor: THEME.soft,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    flexDirection: "row", alignItems: "center", gap: 8,
   },
-  searchInput: { flex: 1, color: THEME.text, fontWeight: "900", fontSize: 13 },
-
-  inspectCols: { flexDirection: "row", paddingHorizontal: 12, paddingBottom: 10, alignItems: "center" },
-  colHead: { fontWeight: "900", color: "#374151", fontSize: 11 },
-
+  colHead: { fontWeight: "900", color: THEME.subtext, fontSize: 11 },
   inspectRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#F3F4F6",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    backgroundColor: THEME.surface,
+    flexDirection: "row", alignItems: "center",
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderTopWidth: 1, borderTopColor: "#F3F4F6",
   },
-  cell: { fontWeight: "900", color: THEME.text, fontSize: 13 },
-  cellStrong: { fontWeight: "900", color: THEME.text, fontSize: 13 },
-  cellName: { fontWeight: "800", color: THEME.text, fontSize: 13 },
-
-  // ✅ 기사 탭 pill
-  catPill: { flex: 1, height: 44, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  catPillText: { fontWeight: "900", fontSize: 13 },
+  colCell: { fontWeight: "800", color: THEME.text, fontSize: 13 },
 });
