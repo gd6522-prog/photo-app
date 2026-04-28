@@ -558,24 +558,26 @@ export default function SignupScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "android" ? 24 : 0}
+      >
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           contentContainerStyle={{
             paddingHorizontal: 18,
             paddingTop: 18,
-            paddingBottom: 28,
+            paddingBottom: 80,
             flexGrow: 1,
           }}
         >
-          <View style={{ alignItems: "center", marginBottom: 14 }}>
+          <View style={{ marginBottom: 18 }}>
             <Image
               source={require("../../assets/hanexpress-logo.png")}
-              style={{ width: 240, height: 70, resizeMode: "contain" }}
+              style={{ width: 300, height: 90, resizeMode: "contain", alignSelf: "flex-end", marginRight: -20 }}
             />
-            <Text style={{ marginTop: 8, color: "#6B7280", textAlign: "center" }}>
-              가입 시 1회 문자 인증 후, 전화번호+비밀번호로 로그인합니다.
-            </Text>
           </View>
 
           <View

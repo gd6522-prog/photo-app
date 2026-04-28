@@ -371,42 +371,33 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F6F7FB" }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "android" ? 24 : 0}
+      >
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           contentContainerStyle={{
-            paddingHorizontal: 18,
-            paddingTop: 26,
-            paddingBottom: 28,
+            paddingHorizontal: 20,
+            paddingTop: Platform.OS === "ios" ? 40 : 60,
+            paddingBottom: 80,
             flexGrow: 1,
-            justifyContent: "center",
           }}
         >
-          <View style={{ alignItems: "center", marginBottom: 18 }}>
+          {/* 로고 */}
+          <View style={{ marginBottom: 30 }}>
             <Image
               source={require("../../assets/hanexpress-logo.png")}
-              style={{ width: 260, height: 80, resizeMode: "contain" }}
+              style={{ width: 420, height: 136, resizeMode: "contain", alignSelf: "flex-end", marginRight: -90 }}
             />
           </View>
 
-          <View
-            style={{
-              backgroundColor: "#FFFFFF",
-              borderRadius: 18,
-              padding: 16,
-              borderWidth: 1,
-              borderColor: "#E5E7EB",
-              gap: 12,
-              shadowColor: "#000",
-              shadowOpacity: 0.06,
-              shadowRadius: 12,
-              elevation: 2,
-            }}
-          >
-            <Text style={{ fontSize: 20, fontWeight: "900", color: "#111827" }}>로그인</Text>
-
+          {/* 폼 */}
+          <View style={{ gap: 14 }}>
             <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>전화번호</Text>
+              <Text style={{ color: "#374151", fontWeight: "800", fontSize: 14 }}>전화번호</Text>
               <TextInput
                 value={phone}
                 onChangeText={setPhone}
@@ -417,29 +408,30 @@ export default function LoginScreen() {
                 autoCorrect={false}
                 editable={!loading}
                 style={{
-                  backgroundColor: "#F9FAFB",
+                  backgroundColor: "#FFFFFF",
                   borderWidth: 1,
                   borderColor: e164 || phone.length === 0 ? "#E5E7EB" : "#EF4444",
                   borderRadius: 12,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
+                  paddingHorizontal: 14,
+                  paddingVertical: 14,
                   color: "#111827",
+                  fontSize: 15,
                 }}
               />
               <Text style={{ color: "#9CA3AF", fontSize: 12 }}>하이픈 없이 입력해도 됩니다.</Text>
             </View>
 
             <View style={{ gap: 6 }}>
-              <Text style={{ color: "#374151", fontWeight: "800" }}>비밀번호</Text>
+              <Text style={{ color: "#374151", fontWeight: "800", fontSize: 14 }}>비밀번호</Text>
               <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  backgroundColor: "#F9FAFB",
+                  backgroundColor: "#FFFFFF",
                   borderWidth: 1,
                   borderColor: "#E5E7EB",
                   borderRadius: 12,
-                  paddingHorizontal: 12,
+                  paddingHorizontal: 14,
                 }}
               >
                 <TextInput
@@ -451,7 +443,7 @@ export default function LoginScreen() {
                   autoCapitalize="none"
                   autoCorrect={false}
                   editable={!loading}
-                  style={{ flex: 1, paddingVertical: 12, color: "#111827" }}
+                  style={{ flex: 1, paddingVertical: 14, color: "#111827", fontSize: 15 }}
                 />
                 <Pressable onPress={() => setShowPw((v) => !v)} style={{ paddingLeft: 10, paddingVertical: 10 }} disabled={loading}>
                   <Text style={{ color: "#2563EB", fontWeight: "900" }}>{showPw ? "숨김" : "표시"}</Text>
@@ -459,14 +451,7 @@ export default function LoginScreen() {
               </View>
             </View>
 
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginTop: 2,
-              }}
-            >
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
               <Pressable onPress={toggleAutoLogin} disabled={loading} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <View
                   style={{
@@ -490,40 +475,49 @@ export default function LoginScreen() {
               </Pressable>
             </View>
 
-            <View style={{ marginTop: 4, marginBottom: 2 }}>
-              <Text style={{ color: "#6B7280", textAlign: "center" }}>{failGuide}</Text>
-              {!loginLocked && loginFailCount > 0 ? (
-                <Text style={{ marginTop: 6, color: "#DC2626", textAlign: "center", fontWeight: "800" }}>
-                  5회 실패하면 승인대기 상태로 변경됩니다.
+            {(loginLocked || loginFailCount > 0) ? (
+              <View style={{ backgroundColor: "#FEF2F2", borderRadius: 10, padding: 12, gap: 4 }}>
+                <Text style={{ color: loginLocked ? "#DC2626" : "#6B7280", textAlign: "center", fontWeight: "800", fontSize: 13 }}>
+                  {failGuide}
                 </Text>
-              ) : null}
-            </View>
+                {!loginLocked && loginFailCount > 0 ? (
+                  <Text style={{ color: "#DC2626", textAlign: "center", fontSize: 12 }}>
+                    5회 실패하면 승인대기 상태로 변경됩니다.
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <Text style={{ color: "#9CA3AF", textAlign: "center", fontSize: 13 }}>{failGuide}</Text>
+            )}
 
             <Pressable
               onPress={onLogin}
               disabled={!canSubmit || loading}
               style={{
-                height: 46,
-                borderRadius: 12,
+                height: 50,
+                borderRadius: 14,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: !canSubmit || loading ? "#CBD5E1" : "#2563EB",
-                marginTop: 6,
+                marginTop: 4,
               }}
             >
               {loading ? (
                 <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
                   <ActivityIndicator color="#fff" />
-                  <Text style={{ color: "#fff", fontWeight: "900" }}>처리 중...</Text>
+                  <Text style={{ color: "#fff", fontWeight: "900", fontSize: 15 }}>처리 중...</Text>
                 </View>
               ) : (
-                <Text style={{ color: "#fff", fontWeight: "900" }}>로그인</Text>
+                <Text style={{ color: "#fff", fontWeight: "900", fontSize: 15 }}>로그인</Text>
               )}
             </Pressable>
 
-            <Pressable onPress={() => router.push("/(auth)/signup" as any)} disabled={loading} style={{ alignItems: "center", paddingVertical: 4 }}>
-              <Text style={{ color: "#2563EB", fontWeight: "900" }}>회원가입</Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 4 }}>
+              <Text style={{ color: "#9CA3AF", fontSize: 13 }}>계정이 없으신가요?</Text>
+              <Pressable onPress={() => router.push("/(auth)/signup" as any)} disabled={loading}>
+                <Text style={{ color: "#2563EB", fontWeight: "900", fontSize: 13 }}>회원가입</Text>
+              </Pressable>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
