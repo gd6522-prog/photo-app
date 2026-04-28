@@ -1,6 +1,7 @@
 ﻿// app/(tabs)/index.tsx
 import { useFocusEffect } from "@react-navigation/native";
 import { Buffer } from "buffer";
+import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -716,7 +717,12 @@ export default function MainMenu() {
 
       if (finalStatus !== "granted") return;
 
-      const tokenRes = await Notifications.getExpoPushTokenAsync();
+      const projectId =
+        (Constants.expoConfig as any)?.extra?.eas?.projectId ||
+        (Constants as any)?.easConfig?.projectId ||
+        undefined;
+
+      const tokenRes = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
       const token = tokenRes.data;
       if (!token) return;
 
@@ -725,7 +731,9 @@ export default function MainMenu() {
         12000,
         "토큰 저장"
       );
-    } catch {}
+    } catch (e) {
+      console.warn("[push token] register failed", e);
+    }
   }, []);
 
   useEffect(() => {
