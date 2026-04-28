@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "491827246610",
+    "project_id": "drido-20531",
+    "storage_bucket": "drido-20531.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:491827246610:android:d71c0b23f1495e0d76cacb",
+        "android_client_info": {
+          "package_name": "com.drido.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCiH1A-g7K0cmQ2OkfAMV6ZD-_8v0I4Yk4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
