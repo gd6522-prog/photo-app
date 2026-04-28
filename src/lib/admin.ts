@@ -20,6 +20,23 @@ type PendingLabelPayload = {
   labels: Record<string, string>;
 };
 
+export type AdminRole = "main" | "center" | "company" | null;
+
+export type ParkingRequestRow = {
+  id: string;
+  type: "regular" | "visitor";
+  company: string;
+  name: string;
+  car_number: string;
+  phone: string;
+  visit_date: string | null;
+  expire_date: string | null;
+  status: "pending" | "approved" | "rejected" | "expired";
+  reject_reason: string | null;
+  admin_memo: string | null;
+  created_at: string;
+};
+
 function inferPendingLabel(row: Partial<PendingApprovalRow>) {
   const explicit = String(row.pending_label ?? "").trim();
   if (explicit) return explicit;
@@ -27,31 +44,47 @@ function inferPendingLabel(row: Partial<PendingApprovalRow>) {
   return "신규가입";
 }
 
-export async function isAdminUser(): Promise<boolean> {
+function compactWorkPart(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, "");
+}
+
+export async function getAdminRole(): Promise<AdminRole> {
   const { data: sess } = await supabase.auth.getSession();
   const user = sess?.session?.user;
-  if (!user) return false;
+  if (!user) return null;
 
+  let prof: any = null;
   try {
-    const { data: prof, error } = await supabase.from("profiles").select("is_admin").eq("id", user.id).maybeSingle();
-    if (!error && prof && typeof (prof as any).is_admin === "boolean") {
-      return !!(prof as any).is_admin;
-    }
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("is_admin, is_company_admin, work_part")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (!error) prof = data;
   } catch {}
 
-  try {
-    const { data, error } = await supabase.from("admin_users").select("user_id").eq("user_id", user.id).maybeSingle();
-    if (!error && data?.user_id) return true;
-  } catch {}
+  if (prof?.is_admin === true) return "main";
+
+  const wp = compactWorkPart(prof?.work_part);
+  if (wp === "관리자" || wp === "일반관리자") return "main";
+  if (wp === "센터관리자") return "center";
+  if (prof?.is_company_admin === true) return "company";
+  if (wp === "업체관리자") return "company";
 
   try {
-    const { data: prof, error } = await supabase.from("profiles").select("work_part").eq("id", user.id).maybeSingle();
-    if (!error && String(prof?.work_part ?? "").trim() === "관리자") {
-      return true;
-    }
+    const { data, error } = await supabase
+      .from("admin_users")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (!error && data?.user_id) return "main";
   } catch {}
 
-  return false;
+  return null;
+}
+
+export async function isAdminUser(): Promise<boolean> {
+  return (await getAdminRole()) !== null;
 }
 
 export async function fetchPendingApprovals(): Promise<PendingApprovalPayload> {
@@ -102,7 +135,7 @@ export async function fetchPendingLabels(userIds: string[]): Promise<Record<stri
   return payload.labels ?? {};
 }
 
-export async function getPendingCount(): Promise<number> {
+async function getSignupPendingCount(): Promise<number> {
   try {
     const payload = await fetchPendingApprovals();
     return payload.count;
@@ -119,4 +152,73 @@ export async function getPendingCount(): Promise<number> {
       return 0;
     }
   }
+}
+
+export async function getPendingParkingCount(): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from("parking_requests")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending")
+      .eq("type", "regular");
+    if (error) return 0;
+    return Number.isFinite(count as any) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function getPendingCount(role?: AdminRole): Promise<number> {
+  const r = role ?? (await getAdminRole());
+  if (!r) return 0;
+
+  if (r === "main") {
+    const [signup, parking] = await Promise.all([getSignupPendingCount(), getPendingParkingCount()]);
+    return signup + parking;
+  }
+  if (r === "center") {
+    return getPendingParkingCount();
+  }
+  if (r === "company") {
+    return getSignupPendingCount();
+  }
+  return 0;
+}
+
+export async function fetchPendingParkingRequests(): Promise<ParkingRequestRow[]> {
+  const { data, error } = await supabase
+    .from("parking_requests")
+    .select("id, type, company, name, car_number, phone, visit_date, expire_date, status, reject_reason, admin_memo, created_at")
+    .eq("type", "regular")
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as ParkingRequestRow[];
+}
+
+export async function setParkingRequestStatus(
+  id: string,
+  status: "approved" | "rejected",
+  rejectReason?: string
+): Promise<void> {
+  const { data: sess } = await supabase.auth.getSession();
+  const uid = sess?.session?.user?.id ?? null;
+  const nowIso = new Date().toISOString();
+
+  const patch: Record<string, unknown> =
+    status === "approved"
+      ? {
+          status: "approved",
+          approved_at: nowIso,
+          approved_by: uid,
+          reject_reason: null,
+          expire_date: "2999-12-31",
+        }
+      : {
+          status: "rejected",
+          reject_reason: rejectReason?.trim() || "관리자 거절",
+        };
+
+  const { error } = await supabase.from("parking_requests").update(patch).eq("id", id);
+  if (error) throw error;
 }

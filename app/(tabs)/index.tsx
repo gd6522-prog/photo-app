@@ -29,7 +29,7 @@ import {
 
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
-import { getPendingCount, isAdminUser } from "../../src/lib/admin";
+import { AdminRole, getAdminRole, getPendingCount } from "../../src/lib/admin";
 import { useAuth } from "../../src/lib/auth";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
@@ -445,9 +445,10 @@ export default function MainMenu() {
     ? Math.max(insets.bottom, 24) + 40
     : Math.max(insets.bottom, 10) + 10;
 
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminRole, setAdminRole] = useState<AdminRole>(null);
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [loadingAdmin, setLoadingAdmin] = useState(true);
+  const isAdmin = adminRole !== null;
 
   const [busy, setBusy] = useState(false);
   const [displayName, setDisplayName] = useState<string>("");
@@ -527,17 +528,17 @@ export default function MainMenu() {
   const loadAdmin = useCallback(async () => {
     setLoadingAdmin(true);
     try {
-      const ok = await withTimeout(isAdminUser(), 12000, "관리자 확인");
-      setIsAdmin(!!ok);
+      const role = (await withTimeout(getAdminRole(), 12000, "관리자 확인")) as AdminRole;
+      setAdminRole(role);
 
-      if (ok) {
-        const c = await withTimeout(getPendingCount(), 12000, "승인대기 조회");
+      if (role) {
+        const c = await withTimeout(getPendingCount(role), 12000, "승인대기 조회");
         setPendingCount(Number.isFinite(c as any) ? (c as any) : 0);
       } else {
         setPendingCount(0);
       }
     } catch {
-      setIsAdmin(false);
+      setAdminRole(null);
       setPendingCount(0);
     } finally {
       setLoadingAdmin(false);
@@ -1170,7 +1171,7 @@ export default function MainMenu() {
               clock_in_accuracy_m: loc.accuracy ?? null,
               clock_in_source: source,
             },
-            { onConflict: "user_id,work_date,car_no" }
+            { onConflict: "user_id,work_date" }
           )
           .select(
             "id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
@@ -1271,7 +1272,7 @@ export default function MainMenu() {
               clock_out_accuracy_m: loc.accuracy ?? null,
               clock_out_source: source,
             },
-            { onConflict: "user_id,work_date,car_no" }
+            { onConflict: "user_id,work_date" }
           )
           .select(
             "id, user_id, work_date, car_no, status, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, clock_in_accuracy_m, clock_in_source, clock_out_lat, clock_out_lng, clock_out_accuracy_m, clock_out_source, created_at, updated_at"
@@ -1329,7 +1330,7 @@ export default function MainMenu() {
         await withTimeout(
           supabase.from("work_shifts").upsert(
             { user_id: driver.id, work_date: workDate, car_no: group.car_no, status: "open", clock_in_at: nowIso, clock_in_source: "vehicle" },
-            { onConflict: "user_id,work_date,car_no" }
+            { onConflict: "user_id,work_date" }
           ),
           12000, "입차 저장"
         );
@@ -1356,7 +1357,7 @@ export default function MainMenu() {
         await withTimeout(
           supabase.from("work_shifts").upsert(
             { user_id: driver.id, work_date: workDate, car_no: group.car_no, status: "closed", clock_out_at: nowIso, clock_out_source: "vehicle" },
-            { onConflict: "user_id,work_date,car_no" }
+            { onConflict: "user_id,work_date" }
           ),
           12000, "출차 저장"
         );
@@ -1381,7 +1382,7 @@ export default function MainMenu() {
       await withTimeout(
         supabase.from("work_shifts").upsert(
           { user_id: driver.id, work_date: workDate, car_no: "", status: "open", clock_in_at: nowIso, clock_in_source: `support:${store.store_code}` },
-          { onConflict: "user_id,work_date,car_no" }
+          { onConflict: "user_id,work_date" }
         ),
         12000, "지원 입차 저장"
       );
@@ -1528,14 +1529,20 @@ export default function MainMenu() {
         <Pressable onPress={() => Keyboard.dismiss()}>
 
           {/* ── 상단 헤더 배너 ── */}
-          <View style={[styles.heroBanner, { paddingTop: topPad + (Platform.OS === "ios" ? 4 : 8) }]}>
-            <Image source={require("../../assets/hanexpress-logo.png")} style={styles.heroLogo} />
+          <View style={[styles.heroBanner, Platform.OS === "android" && { paddingTop: topPad + 8 }]}>
+            <View style={styles.heroTop}>
+              <Image source={require("../../assets/hanexpress-logo.png")} style={styles.heroLogo} />
+              <Pressable onPress={onLogout} disabled={busy} style={styles.heroLogoutBtn}>
+                <Ionicons name="log-out-outline" size={14} color="#9CA3AF" />
+                <Text style={styles.heroLogoutText}>로그아웃</Text>
+              </Pressable>
+            </View>
             <View style={styles.heroBottom}>
               <View style={{ flex: 1 }}>
                 {displayName
-                  ? <><Text style={styles.heroName} numberOfLines={1}>{displayName}님</Text><Text style={styles.heroGreeting} numberOfLines={1}>오늘도 안전한 작업 부탁드립니다.</Text></>
-                  : <Text style={styles.heroGreeting} numberOfLines={1}>오늘도 안전한 작업 부탁드립니다.</Text>
-                }
+                  ? <Text style={styles.heroName} numberOfLines={1}>{displayName}님</Text>
+                  : null}
+                <Text style={styles.heroGreeting} numberOfLines={1}>오늘도 안전한 작업 부탁드립니다.</Text>
                 <Text style={styles.heroDate}>{selectedDateLabel}</Text>
               </View>
               {activeWorkPart ? (
@@ -1696,7 +1703,7 @@ export default function MainMenu() {
               )}
             </View>
 
-            {/* ── 가입 승인 (관리자) ── */}
+            {/* ── 가입/차량 신청 승인 (관리자) ── */}
             {approveRowVisible && (
               <Pressable onPress={() => router.push("/(tabs)/approve")} disabled={busy} style={[styles.approveCard, busy && { opacity: 0.6 }]}>
                 <View style={styles.approveCardLeft}>
@@ -1704,8 +1711,14 @@ export default function MainMenu() {
                     <Ionicons name="shield-checkmark" size={18} color="#fff" />
                   </View>
                   <View>
-                    <Text style={styles.approveCardTitle}>가입 승인 관리</Text>
-                    <Text style={styles.approveCardSub}>승인 대기 인원 확인</Text>
+                    <Text style={styles.approveCardTitle}>가입/차량 신청 승인 관리</Text>
+                    <Text style={styles.approveCardSub}>
+                      {adminRole === "main"
+                        ? "가입 · 기기초기화 · 정기신청"
+                        : adminRole === "center"
+                          ? "정기신청 승인 대기"
+                          : "가입 · 기기초기화"}
+                    </Text>
                   </View>
                 </View>
                 <View style={[styles.approveCardBadge, pendingCount > 0 ? styles.approveCardBadgeHot : styles.approveCardBadgeIdle]}>
@@ -1740,12 +1753,12 @@ export default function MainMenu() {
                 <Text style={[styles.actionCellSub, { color: "rgba(255,106,0,0.65)" }]}>제보 · 내역</Text>
               </Pressable>
 
-              <Pressable onPress={onLogout} disabled={busy} style={[styles.actionCell, styles.actionCellDanger, busy && { opacity: 0.6 }]}>
-                <View style={[styles.actionCellIconWrap, { backgroundColor: "#FEF2F2" }]}>
-                  <Ionicons name="log-out-outline" size={24} color="#DC2626" />
+              <Pressable onPress={() => Alert.alert("공지사항", "준비 중입니다.")} style={[styles.actionCell, styles.actionCellBlue]}>
+                <View style={[styles.actionCellIconWrap, { backgroundColor: "#DBEAFE" }]}>
+                  <Ionicons name="megaphone-outline" size={24} color="#3B82F6" />
                 </View>
-                <Text style={[styles.actionCellTitle, { color: "#DC2626" }]}>로그아웃</Text>
-                <Text style={[styles.actionCellSub, { color: "#DC2626", opacity: 0.6 }]}>계정 로그아웃</Text>
+                <Text style={styles.actionCellTitle}>공지사항</Text>
+                <Text style={styles.actionCellSub}>업데이트 · 안내</Text>
               </Pressable>
             </View>
 
@@ -2180,24 +2193,39 @@ const styles = StyleSheet.create({
 
   // 헤더 배너
   heroBanner: {
-    backgroundColor: "#111827",
-    paddingHorizontal: 20,
-    paddingBottom: 24,
+    backgroundColor: "transparent",
+    paddingLeft: 0,
+    paddingRight: 12,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
-  heroLogo: { width: 180, height: 52, resizeMode: "contain", tintColor: "#fff", marginBottom: 16 },
-  heroBottom: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
-  heroName: { fontSize: 22, fontWeight: "800", color: "#fff", letterSpacing: -0.4, lineHeight: 28 },
-  heroGreeting: { fontSize: 13, color: "rgba(255,255,255,0.7)", marginTop: 2, lineHeight: 18 },
-  heroDate: { fontSize: 12, color: "rgba(255,255,255,0.45)", marginTop: 4 },
+  heroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  heroLogo: { width: 240, height: 64, resizeMode: "contain", marginBottom: 4 },
+  heroLogoutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: "#F3F4F6",
+  },
+  heroLogoutText: { fontSize: 11, color: "#9CA3AF", fontWeight: "600" },
+  heroBottom: { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 },
+  heroName: { fontSize: 20, fontWeight: "800", color: "#1E2D40", letterSpacing: -0.3, lineHeight: 26 },
+  heroGreeting: { fontSize: 13, color: "rgba(0,0,0,0.5)", marginTop: 2, lineHeight: 18 },
+  heroDate: { fontSize: 12, color: "rgba(0,0,0,0.35)", marginTop: 3 },
   workPartChip: {
-    backgroundColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "#1E2D40",
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
   },
-  workPartChipText: { fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.9)" },
+  workPartChipText: { fontSize: 12, fontWeight: "700", color: "#ffffff" },
 
   mainContent: { padding: 16, gap: 12 },
 
@@ -2331,6 +2359,7 @@ const styles = StyleSheet.create({
   actionCellOutline: { backgroundColor: THEME.surface, borderColor: THEME.border },
   actionCellOrange: { backgroundColor: THEME.orangeSoft, borderColor: THEME.border },
   actionCellDanger: { backgroundColor: "#FEF2F2", borderColor: "#FECACA" },
+  actionCellBlue: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
   actionCellIconWrap: { width: 44, height: 44, borderRadius: 13, alignItems: "center", justifyContent: "center" },
   actionCellTitle: { fontSize: 15, fontWeight: "800", color: THEME.text, letterSpacing: -0.2 },
   actionCellSub: { fontSize: 12, color: THEME.subtext },
