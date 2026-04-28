@@ -67,6 +67,8 @@ export default function ApproveScreen() {
   const [parkingRows, setParkingRows] = useState<ParkingRequestRow[]>([]);
   const [parkingLoading, setParkingLoading] = useState(false);
   const [parkingCount, setParkingCount] = useState(0);
+  const [parkingProcessingId, setParkingProcessingId] = useState<string | null>(null);
+  const [parkingRejectSubmitting, setParkingRejectSubmitting] = useState(false);
   const [rejectModal, setRejectModal] = useState<{ id: string; name: string } | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
@@ -238,6 +240,8 @@ export default function ApproveScreen() {
   }, []);
 
   const approveParking = useCallback(async (id: string) => {
+    if (parkingProcessingId) return;
+    setParkingProcessingId(id);
     try {
       const result = await setParkingRequestStatus(id, "approved");
       setParkingRows((prev) => prev.filter((r) => r.id !== id));
@@ -250,12 +254,15 @@ export default function ApproveScreen() {
       }
     } catch (e: any) {
       Alert.alert("처리 실패", e?.message ?? "승인 실패");
+    } finally {
+      setParkingProcessingId(null);
     }
-  }, []);
+  }, [parkingProcessingId]);
 
   const submitParkingReject = useCallback(async () => {
-    if (!rejectModal) return;
+    if (!rejectModal || parkingRejectSubmitting) return;
     const id = rejectModal.id;
+    setParkingRejectSubmitting(true);
     try {
       await setParkingRequestStatus(id, "rejected", rejectReason);
       setParkingRows((prev) => prev.filter((r) => r.id !== id));
@@ -264,8 +271,10 @@ export default function ApproveScreen() {
       setRejectReason("");
     } catch (e: any) {
       Alert.alert("처리 실패", e?.message ?? "거절 실패");
+    } finally {
+      setParkingRejectSubmitting(false);
     }
-  }, [rejectModal, rejectReason]);
+  }, [rejectModal, rejectReason, parkingRejectSubmitting]);
 
   const setStatus = useCallback(
     async (userId: string, status: "approved" | "rejected") => {
@@ -375,26 +384,51 @@ export default function ApproveScreen() {
                   <Text style={{ color: "#9CA3AF", fontSize: 12 }}>신청: {fmtKstDate(item.created_at)}</Text>
 
                   <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-                    <Pressable
-                      onPress={() =>
-                        Alert.alert("승인", `${item.name} (${item.car_number}) 정기 차량을 승인할까요?`, [
-                          { text: "취소", style: "cancel" },
-                          { text: "승인", onPress: () => approveParking(item.id) },
-                        ])
-                      }
-                      style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#16A34A", backgroundColor: "#ECFDF5" }}
-                    >
-                      <Text style={{ fontWeight: "900", color: "#16A34A" }}>승인</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setRejectReason("");
-                        setRejectModal({ id: item.id, name: item.name });
-                      }}
-                      style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#EF4444", backgroundColor: "#FEF2F2" }}
-                    >
-                      <Text style={{ fontWeight: "900", color: "#EF4444" }}>거절</Text>
-                    </Pressable>
+                    {(() => {
+                      const isThisProcessing = parkingProcessingId === item.id;
+                      const isAnyProcessing = parkingProcessingId !== null;
+                      const buttonsDisabled = isAnyProcessing;
+                      return (
+                        <>
+                          <Pressable
+                            disabled={buttonsDisabled}
+                            onPress={() =>
+                              Alert.alert("승인", `${item.name} (${item.car_number}) 정기 차량을 승인할까요?`, [
+                                { text: "취소", style: "cancel" },
+                                { text: "승인", onPress: () => approveParking(item.id) },
+                              ])
+                            }
+                            style={{
+                              flex: 1, height: 44, borderRadius: 12,
+                              alignItems: "center", justifyContent: "center",
+                              borderWidth: 1, borderColor: "#16A34A", backgroundColor: "#ECFDF5",
+                              opacity: buttonsDisabled && !isThisProcessing ? 0.4 : 1,
+                            }}
+                          >
+                            {isThisProcessing ? (
+                              <ActivityIndicator size="small" color="#16A34A" />
+                            ) : (
+                              <Text style={{ fontWeight: "900", color: "#16A34A" }}>승인</Text>
+                            )}
+                          </Pressable>
+                          <Pressable
+                            disabled={buttonsDisabled}
+                            onPress={() => {
+                              setRejectReason("");
+                              setRejectModal({ id: item.id, name: item.name });
+                            }}
+                            style={{
+                              flex: 1, height: 44, borderRadius: 12,
+                              alignItems: "center", justifyContent: "center",
+                              borderWidth: 1, borderColor: "#EF4444", backgroundColor: "#FEF2F2",
+                              opacity: buttonsDisabled ? 0.4 : 1,
+                            }}
+                          >
+                            <Text style={{ fontWeight: "900", color: "#EF4444" }}>거절</Text>
+                          </Pressable>
+                        </>
+                      );
+                    })()}
                   </View>
                 </View>
               )}
@@ -574,16 +608,29 @@ export default function ApproveScreen() {
           />
           <View style={{ flexDirection: "row", gap: 10 }}>
             <Pressable
+              disabled={parkingRejectSubmitting}
               onPress={() => setRejectModal(null)}
-              style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#E5E7EB", backgroundColor: "#fff" }}
+              style={{
+                flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center",
+                borderWidth: 1, borderColor: "#E5E7EB", backgroundColor: "#fff",
+                opacity: parkingRejectSubmitting ? 0.4 : 1,
+              }}
             >
               <Text style={{ fontWeight: "900", color: "#374151" }}>취소</Text>
             </Pressable>
             <Pressable
+              disabled={parkingRejectSubmitting}
               onPress={submitParkingReject}
-              style={{ flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#EF4444", backgroundColor: "#FEF2F2" }}
+              style={{
+                flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center",
+                borderWidth: 1, borderColor: "#EF4444", backgroundColor: "#FEF2F2",
+              }}
             >
-              <Text style={{ fontWeight: "900", color: "#EF4444" }}>거절</Text>
+              {parkingRejectSubmitting ? (
+                <ActivityIndicator size="small" color="#EF4444" />
+              ) : (
+                <Text style={{ fontWeight: "900", color: "#EF4444" }}>거절</Text>
+              )}
             </Pressable>
           </View>
         </View>
