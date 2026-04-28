@@ -239,9 +239,15 @@ export default function ApproveScreen() {
 
   const approveParking = useCallback(async (id: string) => {
     try {
-      await setParkingRequestStatus(id, "approved");
+      const result = await setParkingRequestStatus(id, "approved");
       setParkingRows((prev) => prev.filter((r) => r.id !== id));
       setParkingCount((prev) => Math.max(0, prev - 1));
+      if (result.sregistError) {
+        Alert.alert(
+          "주차관제 등록 실패",
+          `승인은 처리됐지만 주차관제 자동등록은 실패했습니다.\n사유: ${result.sregistError}\n\n관리자 페이지의 [재등록] 버튼으로 다시 시도할 수 있습니다.`
+        );
+      }
     } catch (e: any) {
       Alert.alert("처리 실패", e?.message ?? "승인 실패");
     }

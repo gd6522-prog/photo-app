@@ -1,5 +1,8 @@
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "./supabase";
 
+// Drido 웹(Next.js) API base URL — sregist(주차관제) 자동등록을 함께 처리하는 라우트 호출용
+const DRIDO_API_BASE = "https://dridolabs.com";
+
 export type PendingApprovalRow = {
   id: string;
   phone: string | null;
@@ -196,29 +199,61 @@ export async function fetchPendingParkingRequests(): Promise<ParkingRequestRow[]
   return (data ?? []) as ParkingRequestRow[];
 }
 
+/**
+ * 주차 신청 승인/거절 처리.
+ *
+ * - 승인은 Drido 웹의 API 라우트를 호출해 DB 승인 + sregist(주차관제) 자동등록까지 함께 수행한다.
+ *   기존 supabase 직접 update 방식은 sregist 호출이 빠져 차량이 외부 시스템에 등록되지 않았다.
+ * - 거절은 sregist와 무관해서 종전대로 supabase 직접 update.
+ *
+ * 반환값: sregistError 가 있으면 "DB 승인은 됐지만 주차관제 자동등록은 실패" 한 케이스.
+ *        호출 측에서 별도 알림 표시 후, 관리자 웹 페이지의 [재등록] 버튼으로 복구 가능하다.
+ */
 export async function setParkingRequestStatus(
   id: string,
   status: "approved" | "rejected",
   rejectReason?: string
-): Promise<void> {
-  const { data: sess } = await supabase.auth.getSession();
-  const uid = sess?.session?.user?.id ?? null;
-  const nowIso = new Date().toISOString();
+): Promise<{ sregistError?: string }> {
+  if (status === "approved") {
+    const { data: sess, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) throw sessErr;
+    const accessToken = String(sess.session?.access_token ?? "").trim();
+    if (!accessToken) throw new Error("관리자 세션이 없습니다.");
 
-  const patch: Record<string, unknown> =
-    status === "approved"
-      ? {
-          status: "approved",
-          approved_at: nowIso,
-          approved_by: uid,
-          reject_reason: null,
-          expire_date: "2999-12-31",
-        }
-      : {
-          status: "rejected",
-          reject_reason: rejectReason?.trim() || "관리자 거절",
-        };
+    const res = await fetch(`${DRIDO_API_BASE}/api/admin/parking/${id}/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
 
-  const { error } = await supabase.from("parking_requests").update(patch).eq("id", id);
+    const payload = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      sregistAttempted?: boolean;
+      sregistRegistered?: boolean;
+      sregistError?: string;
+    };
+
+    if (!res.ok || payload.ok === false) {
+      throw new Error(payload.message || `승인 처리 실패 (HTTP ${res.status})`);
+    }
+
+    if (payload.sregistAttempted && payload.sregistRegistered === false) {
+      return { sregistError: payload.sregistError || "주차관제 자동등록 실패" };
+    }
+    return {};
+  }
+
+  // 거절: 종전대로 supabase 직접 update (sregist 영향 없음)
+  const { error } = await supabase
+    .from("parking_requests")
+    .update({
+      status: "rejected",
+      reject_reason: rejectReason?.trim() || "관리자 거절",
+    })
+    .eq("id", id);
   if (error) throw error;
+  return {};
 }
