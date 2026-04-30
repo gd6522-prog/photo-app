@@ -320,8 +320,8 @@ export default function ApproveScreen() {
           </Pressable>
         </View>
 
-        {/* 탭 (역할별) */}
-        {visibleTabs.length > 1 && (
+        {/* 탭 (역할별). 단일 탭(예: 센터관리자=정기신청 only)도 화면 위에 라벨처럼 보이도록 노출. */}
+        {visibleTabs.length > 0 && (
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
             {visibleTabs.map((t) => {
               const active = tab === t;

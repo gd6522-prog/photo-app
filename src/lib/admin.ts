@@ -60,19 +60,27 @@ export async function getAdminRole(): Promise<AdminRole> {
   try {
     const { data, error } = await supabase
       .from("profiles")
-      .select("is_admin, is_company_admin, work_part")
+      .select("is_admin, is_company_admin, is_center_admin, work_part")
       .eq("id", user.id)
       .maybeSingle();
     if (!error) prof = data;
   } catch {}
 
+  // 명시적 메인 관리자 (is_admin = true)
   if (prof?.is_admin === true) return "main";
 
   const wp = compactWorkPart(prof?.work_part);
+
+  // 센터관리자: is_center_admin 플래그 또는 work_part="센터관리자".
+  // (실제 데이터에선 work_part="관리자" + is_center_admin=true 케이스가 흔하므로
+  //  플래그를 work_part 보다 먼저 체크해 "main" 으로 잘못 분류되지 않도록 한다.)
+  if (prof?.is_center_admin === true || wp === "센터관리자") return "center";
+
+  // 업체관리자
+  if (prof?.is_company_admin === true || wp === "업체관리자") return "company";
+
+  // 일반/메인 관리자 (work_part 만으로 판단)
   if (wp === "관리자" || wp === "일반관리자") return "main";
-  if (wp === "센터관리자") return "center";
-  if (prof?.is_company_admin === true) return "company";
-  if (wp === "업체관리자") return "company";
 
   try {
     const { data, error } = await supabase
