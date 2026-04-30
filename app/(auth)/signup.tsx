@@ -9,12 +9,12 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { localeFromNationality, setLocale } from "../../src/lib/locale";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { getWorkPartOptionsIncludeDriver, Option } from "../../src/lib/workParts";
@@ -141,6 +141,8 @@ function PickerModal({
   onClose: () => void;
   onChange: (v: string) => void;
 }) {
+  const modalInsets = useSafeAreaInsets();
+  const bottomInset = Math.max(modalInsets.bottom, 18);
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable
@@ -153,7 +155,7 @@ function PickerModal({
             backgroundColor: "#fff",
             borderTopLeftRadius: 18,
             borderTopRightRadius: 18,
-            paddingBottom: 18,
+            paddingBottom: bottomInset,
             overflow: "hidden",
           }}
         >
