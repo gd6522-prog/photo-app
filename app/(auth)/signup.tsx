@@ -1,5 +1,4 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -176,11 +175,39 @@ function PickerModal({
             </Pressable>
           </View>
 
-          <Picker selectedValue={value} onValueChange={(v) => onChange(String(v))}>
-            {options.map((o) => (
-              <Picker.Item key={o.value || "empty"} label={o.label} value={o.value} />
-            ))}
-          </Picker>
+          <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+            {options.map((o) => {
+              const active = o.value === value;
+              return (
+                <Pressable
+                  key={o.value || "empty"}
+                  onPress={() => onChange(o.value)}
+                  android_ripple={{ color: "#E5E7EB" }}
+                  style={({ pressed }) => ({
+                    paddingVertical: 14,
+                    paddingHorizontal: 18,
+                    borderBottomWidth: 1,
+                    borderBottomColor: "#F1F5F9",
+                    backgroundColor: active ? "#EFF6FF" : pressed ? "#F8FAFC" : "#fff",
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  })}
+                >
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      fontWeight: active ? "900" : "600",
+                      color: active ? "#2563EB" : "#111827",
+                    }}
+                  >
+                    {o.label}
+                  </Text>
+                  {active ? <Text style={{ color: "#2563EB", fontWeight: "900", fontSize: 16 }}>✓</Text> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>
