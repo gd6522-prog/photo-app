@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, Modal, Platform, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
+import * as Notifications from "expo-notifications";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import {
   AdminRole,
@@ -156,6 +157,33 @@ export default function ApproveScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 화면 포커스 시 자동 새로고침 (다른 탭에서 돌아오거나 알림 탭으로 진입했을 때)
+  useFocusEffect(
+    useCallback(() => {
+      if (!role) return;
+      const tabs = tabsForRole(role);
+      if (tabs.includes("approve")) {
+        loadSignup().catch(() => {});
+      }
+      if (tabs.includes("parking")) {
+        loadParking().catch(() => {});
+      }
+    }, [role, loadSignup, loadParking])
+  );
+
+  // 정기신청 알림이 앱 사용중에 도착/탭된 경우 즉시 목록 갱신.
+  // (이미 화면에 머물러 있으면 useFocusEffect 가 다시 트리거되지 않으므로 별도 리스너 필요)
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response?.notification?.request?.content?.data as { type?: string } | undefined;
+      if (data?.type === "parking_request_new") {
+        loadParking().catch(() => {});
+        if (visibleTabs.includes("parking")) setTab("parking");
+      }
+    });
+    return () => sub.remove();
+  }, [loadParking, visibleTabs]);
 
   const rejectAndDeleteUser = useCallback(async (userId: string) => {
     const { data, error } = await supabase.auth.getSession();

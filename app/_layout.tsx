@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useRef, useState } from "react";
 import { Stack, useRootNavigationState, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import * as Notifications from "expo-notifications";
 import { LogBox, Text, TextInput } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider, useAuth } from "../src/lib/auth";
@@ -93,6 +94,29 @@ function AuthGate() {
       }, 50);
     });
   }, [user?.id, loading, postSignupRedirect, segments?.[0], navState?.key, router, readyToRender]);
+
+  // 알림 탭 → 해당 화면으로 자동 이동 (cold-start / warm 양쪽 모두)
+  useEffect(() => {
+    if (!user || loading) return;
+
+    const handleResponse = (
+      response: Notifications.NotificationResponse | null | undefined
+    ) => {
+      const data = response?.notification?.request?.content?.data as { type?: string } | undefined;
+      if (data?.type === "parking_request_new") {
+        router.push("/(tabs)/approve" as any);
+      }
+    };
+
+    // cold-start: 앱이 알림으로 열렸을 때
+    Notifications.getLastNotificationResponseAsync()
+      .then(handleResponse)
+      .catch(() => {});
+
+    // warm: 앱이 떠 있는 동안 알림을 탭한 경우
+    const sub = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    return () => sub.remove();
+  }, [user, loading, router]);
 
   if (!readyToRender) return null;
 
