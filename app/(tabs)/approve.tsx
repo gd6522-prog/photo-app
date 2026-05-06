@@ -289,6 +289,10 @@ export default function ApproveScreen() {
 
   const submitParkingReject = useCallback(async () => {
     if (!rejectModal || parkingRejectSubmitting) return;
+    if (!rejectReason.trim()) {
+      Alert.alert("입력 필요", "거절 사유를 입력해 주세요.");
+      return;
+    }
     const id = rejectModal.id;
     setParkingRejectSubmitting(true);
     try {
@@ -625,13 +629,17 @@ export default function ApproveScreen() {
         <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.4)" }} onPress={() => setRejectModal(null)} />
         <View style={{ position: "absolute", left: 16, right: 16, top: "30%", backgroundColor: "#fff", borderRadius: 16, padding: 18, gap: 12 }}>
           <Text style={{ fontSize: 16, fontWeight: "900", color: "#111827" }}>정기신청 거절</Text>
-          <Text style={{ color: "#6B7280" }}>{rejectModal?.name} 신청을 거절합니다. 사유를 입력해 주세요.</Text>
+          <Text style={{ color: "#6B7280" }}>
+            {rejectModal?.name} 신청을 거절합니다. 사유를 입력해 주세요.{"\n"}
+            <Text style={{ color: "#EF4444", fontWeight: "800" }}>입력한 사유는 신청자에게 알림톡으로 전달됩니다.</Text>
+          </Text>
           <TextInput
             value={rejectReason}
             onChangeText={setRejectReason}
-            placeholder="거절 사유 (선택)"
+            placeholder="거절 사유 (필수)"
             placeholderTextColor="#9CA3AF"
             multiline
+            maxLength={300}
             style={{ minHeight: 60, borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 10, padding: 10, color: "#111827", textAlignVertical: "top" }}
           />
           <View style={{ flexDirection: "row", gap: 10 }}>
@@ -647,11 +655,12 @@ export default function ApproveScreen() {
               <Text style={{ fontWeight: "900", color: "#374151" }}>취소</Text>
             </Pressable>
             <Pressable
-              disabled={parkingRejectSubmitting}
+              disabled={parkingRejectSubmitting || !rejectReason.trim()}
               onPress={submitParkingReject}
               style={{
                 flex: 1, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center",
                 borderWidth: 1, borderColor: "#EF4444", backgroundColor: "#FEF2F2",
+                opacity: !rejectReason.trim() && !parkingRejectSubmitting ? 0.4 : 1,
               }}
             >
               {parkingRejectSubmitting ? (

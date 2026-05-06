@@ -210,9 +210,9 @@ export async function fetchPendingParkingRequests(): Promise<ParkingRequestRow[]
 /**
  * 주차 신청 승인/거절 처리.
  *
- * - 승인은 Drido 웹의 API 라우트를 호출해 DB 승인 + sregist(주차관제) 자동등록까지 함께 수행한다.
- *   기존 supabase 직접 update 방식은 sregist 호출이 빠져 차량이 외부 시스템에 등록되지 않았다.
- * - 거절은 sregist와 무관해서 종전대로 supabase 직접 update.
+ * 두 액션 모두 Drido 웹 API 라우트를 호출:
+ * - 승인: DB 승인 + sregist(주차관제) 자동등록 + 신청자에게 "승인 완료" 알림톡
+ * - 거절: DB 상태 변경 + 신청자에게 "처리결과(거절)" 알림톡 — 사유 필수
  *
  * 반환값: sregistError 가 있으면 "DB 승인은 됐지만 주차관제 자동등록은 실패" 한 케이스.
  *        호출 측에서 별도 알림 표시 후, 관리자 웹 페이지의 [재등록] 버튼으로 복구 가능하다.
@@ -222,12 +222,12 @@ export async function setParkingRequestStatus(
   status: "approved" | "rejected",
   rejectReason?: string
 ): Promise<{ sregistError?: string }> {
-  if (status === "approved") {
-    const { data: sess, error: sessErr } = await supabase.auth.getSession();
-    if (sessErr) throw sessErr;
-    const accessToken = String(sess.session?.access_token ?? "").trim();
-    if (!accessToken) throw new Error("관리자 세션이 없습니다.");
+  const { data: sess, error: sessErr } = await supabase.auth.getSession();
+  if (sessErr) throw sessErr;
+  const accessToken = String(sess.session?.access_token ?? "").trim();
+  if (!accessToken) throw new Error("관리자 세션이 없습니다.");
 
+  if (status === "approved") {
     const res = await fetch(`${DRIDO_API_BASE}/api/admin/parking/${id}/approve`, {
       method: "POST",
       headers: {
@@ -254,14 +254,21 @@ export async function setParkingRequestStatus(
     return {};
   }
 
-  // 거절: 종전대로 supabase 직접 update (sregist 영향 없음)
-  const { error } = await supabase
-    .from("parking_requests")
-    .update({
-      status: "rejected",
-      reject_reason: rejectReason?.trim() || "관리자 거절",
-    })
-    .eq("id", id);
-  if (error) throw error;
+  // 거절: Drido API 경유 → 신청자에게 알림톡까지 발송
+  const reason = String(rejectReason ?? "").trim();
+  if (!reason) throw new Error("거절 사유를 입력해 주세요.");
+
+  const res = await fetch(`${DRIDO_API_BASE}/api/admin/parking/${id}/reject`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ reason }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string };
+  if (!res.ok || payload.ok === false) {
+    throw new Error(payload.message || `거절 처리 실패 (HTTP ${res.status})`);
+  }
   return {};
 }
