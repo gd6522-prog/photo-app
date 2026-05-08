@@ -36,11 +36,15 @@ function compactWorkPart(value: unknown) {
   return String(value ?? "").trim().replace(/\s+/g, "");
 }
 
+/**
+ * 알림을 받을 대상: 메인관리자(is_admin=true) 또는 센터관리자(is_center_admin=true 또는 work_part="센터관리자")만.
+ * 일반관리자(work_part="관리자"/"일반관리자")와 업체관리자(is_company_admin=true)는 제외.
+ */
 function isMainOrCenterAdmin(row: any) {
-  if (row?.is_admin === true) return true;
+  if (row?.is_admin === true) return true; // 메인
+  if (row?.is_center_admin === true) return true; // 센터(플래그)
   const wp = compactWorkPart(row?.work_part);
-  if (wp === "관리자" || wp === "일반관리자") return true;
-  if (wp === "센터관리자") return true;
+  if (wp === "센터관리자") return true; // 센터(work_part)
   return false;
 }
 
@@ -94,7 +98,7 @@ Deno.serve(async (req) => {
     // 메인관리자 + 센터관리자 토큰 수집
     const { data: admins, error: adminErr } = await supabase
       .from("profiles")
-      .select("id, expo_push_token, is_admin, work_part")
+      .select("id, expo_push_token, is_admin, is_center_admin, is_company_admin, work_part")
       .not("expo_push_token", "is", null);
 
     if (adminErr) {

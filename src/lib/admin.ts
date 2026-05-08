@@ -79,8 +79,8 @@ export async function getAdminRole(): Promise<AdminRole> {
   // 업체관리자
   if (prof?.is_company_admin === true || wp === "업체관리자") return "company";
 
-  // 일반/메인 관리자 (work_part 만으로 판단)
-  if (wp === "관리자" || wp === "일반관리자") return "main";
+  // 일반관리자(work_part="관리자"/"일반관리자")는 RN 앱 관리자 화면에 권한 없음 → null.
+  // (예전엔 main 으로 매핑됐지만, 메인관리자/센터관리자/업체관리자만 각자 탭이 보이도록 변경)
 
   try {
     const { data, error } = await supabase
