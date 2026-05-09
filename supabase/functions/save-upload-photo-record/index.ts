@@ -93,21 +93,25 @@ Deno.serve(async (req) => {
     const table = normalizeTable(body.table);
     if (!table) return json(400, { error: "Invalid table" });
 
-    const token = authTokenFrom(req) || String(body.access_token ?? "").trim();
-    let actorId: string | null = null;
-    if (token) {
-      const { data: actorData } = await admin.auth.getUser(token);
-      actorId = asNonEmptyString(actorData?.user?.id);
-    }
+    // verify_jwt가 꺼져 있어도 함수 내부에서 사용자 access_token을 검증한다
+    // (모바일 앱 Authorization 헤더에 publishable key가 들어가 401 거부되던 이슈 우회)
+    const token = String(body.access_token ?? "").trim() || authTokenFrom(req);
+    if (!token) return json(401, { error: "Missing access_token" });
+    const { data: actorData, error: actorErr } = await admin.auth.getUser(token);
+    if (actorErr || !actorData?.user?.id) return json(401, { error: "Invalid access_token" });
+    const actorId = asNonEmptyString(actorData.user.id)!;
 
     const payload = sanitizePayload(table, (body.payload ?? {}) as Record<string, unknown>, actorId);
     const minimalPayload = sanitizePayload(table, (body.minimal_payload ?? body.payload ?? {}) as Record<string, unknown>, actorId);
 
-    if (table === "photos" && !payload.user_id && !minimalPayload.user_id) {
-      return json(400, { error: "Missing user_id" });
+    // 다른 사용자 ID로 위장 insert 차단 — 검증된 actorId와 일치해야 함
+    if (table === "photos") {
+      if (payload.user_id !== actorId) payload.user_id = actorId;
+      if (minimalPayload.user_id !== actorId) minimalPayload.user_id = actorId;
     }
-    if (table === "delivery_photos" && !payload.created_by && !minimalPayload.created_by) {
-      return json(400, { error: "Missing created_by" });
+    if (table === "delivery_photos") {
+      if (payload.created_by !== actorId) payload.created_by = actorId;
+      if (minimalPayload.created_by !== actorId) minimalPayload.created_by = actorId;
     }
 
     const { error } = await admin.from(table).insert(payload);
