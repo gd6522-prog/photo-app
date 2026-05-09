@@ -96,15 +96,18 @@ function AuthGate() {
   }, [user?.id, loading, postSignupRedirect, segments?.[0], navState?.key, router, readyToRender]);
 
   // 알림 탭 → 해당 화면으로 자동 이동 (cold-start / warm 양쪽 모두)
-  useEffect(() => {
-    if (!user || loading) return;
+  // 기존 구현은 cold-start 시 navigation 이 준비되기 전에 push 가 발사되어
+  // 검은 빈 화면으로 머무는 사례가 있었음. pendingTarget 으로 큐잉했다가
+  // navState/user/readyToRender 가 모두 준비된 뒤에 한 번만 navigate 한다.
+  const [pendingNavTarget, setPendingNavTarget] = useState<string | null>(null);
 
+  useEffect(() => {
     const handleResponse = (
       response: Notifications.NotificationResponse | null | undefined
     ) => {
       const data = response?.notification?.request?.content?.data as { type?: string } | undefined;
       if (data?.type === "parking_request_new") {
-        router.push("/(tabs)/approve" as any);
+        setPendingNavTarget("/(tabs)/approve");
       }
     };
 
@@ -116,7 +119,28 @@ function AuthGate() {
     // warm: 앱이 떠 있는 동안 알림을 탭한 경우
     const sub = Notifications.addNotificationResponseReceivedListener(handleResponse);
     return () => sub.remove();
-  }, [user, loading, router]);
+  }, []);
+
+  // pendingNavTarget 이 있고 navigation/auth/렌더가 모두 준비됐을 때만 실제 push
+  useEffect(() => {
+    if (!pendingNavTarget) return;
+    if (!navState?.key) return;     // navigator 미준비
+    if (loading) return;            // auth 로딩 중
+    if (!user) return;              // 로그인 전엔 이동하지 않음 (auth 게이트가 처리)
+    if (!readyToRender) return;     // 첫 렌더 전엔 이동하지 않음
+
+    const target = pendingNavTarget;
+    setPendingNavTarget(null);
+    // 다음 프레임에 push (현재 mount 흐름 끝난 뒤)
+    const id = setTimeout(() => {
+      try {
+        router.push(target as any);
+      } catch (e) {
+        console.warn("[notif nav] push failed", e);
+      }
+    }, 50);
+    return () => clearTimeout(id);
+  }, [pendingNavTarget, navState?.key, loading, user, readyToRender, router]);
 
   if (!readyToRender) return null;
 
