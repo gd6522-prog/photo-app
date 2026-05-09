@@ -54,6 +54,23 @@ function hasOrderForPart(row: VehicleSnapshotCargoRow, fields: (keyof VehicleSna
   return fields.some((f) => ((row[f] as number | null) ?? 0) > 0);
 }
 
+const ALL_ORDER_FIELDS: (keyof VehicleSnapshotCargoRow)[] = [
+  "large_box", "large_inner", "large_other", "small_low", "small_high", "tobacco",
+];
+
+// 오늘(KST) 기준 납품예정일 = 오늘+1, 토요일은 +2 (일요일 배송 없음)
+function nextDeliveryDateKST(): string {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const dow = kst.getUTCDay(); // 0=일, 6=토
+  const add = dow === 6 ? 2 : 1;
+  const next = new Date(kst.getTime() + add * 24 * 60 * 60 * 1000);
+  const yyyy = next.getUTCFullYear();
+  const mm = String(next.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(next.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return corsPreflight();
   if (req.method !== "POST") return json(405, { error: "Method Not Allowed" });
@@ -64,7 +81,13 @@ Deno.serve(async (req) => {
     const partFields = WORK_PART_FIELDS[workPart] ?? null;
 
     const R2_PUBLIC_URL = "https://pub-2ed566ac41944f778e208a0ccea9acd5.r2.dev";
-    const r2Res = await fetch(`${R2_PUBLIC_URL}/vehicle-data/current/latest.json`);
+    // 1) 오늘 기준 납품예정일 daily 스냅샷 우선 조회 (관리자 사진 페이지와 동일 기준)
+    const deliveryDate = nextDeliveryDateKST();
+    let r2Res = await fetch(`${R2_PUBLIC_URL}/vehicle-data/daily/${deliveryDate}.json`);
+    // 2) 없으면 latest.json 폴백
+    if (r2Res.status === 404) {
+      r2Res = await fetch(`${R2_PUBLIC_URL}/vehicle-data/current/latest.json`);
+    }
     if (!r2Res.ok) {
       if (r2Res.status === 404) {
         return json(200, { ok: true, store_codes: [] });
@@ -76,9 +99,9 @@ Deno.serve(async (req) => {
     const parsed = JSON.parse(raw) as VehicleSnapshot;
     const allRows = parsed.cargoRows ?? [];
 
-    const filteredRows = partFields
-      ? allRows.filter((row) => hasOrderForPart(row, partFields))
-      : allRows;
+    // workPart가 지정되면 해당 파트 발주가 있는 점포만, 없으면 어떤 파트든 발주가 있는 점포만
+    const filterFields = partFields ?? ALL_ORDER_FIELDS;
+    const filteredRows = allRows.filter((row) => hasOrderForPart(row, filterFields));
 
     const storeCodes = Array.from(
       new Set(
