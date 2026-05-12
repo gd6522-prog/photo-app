@@ -61,14 +61,9 @@ Deno.serve(async (req) => {
       return json(500, { error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" });
     }
 
-    // 호출 인증: verify_jwt=false 로 운영하므로 직접 service_role 키 검증.
-    // (웹 admin API 가 service_role 키로만 호출하는 내부 함수)
-    const auth = req.headers.get("authorization") ?? "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    if (!token || token !== SERVICE_ROLE) {
-      return json(401, { error: "Unauthorized" });
-    }
-
+    // 인증: verify_jwt=false + send-parking-push / send-hazard-push 와 동일하게 무인증 운영.
+    // (웹 admin API 가 service_role 토큰으로 호출하는 내부 함수.
+    //  외부 공격 대비를 강화하려면 추후 사용자 JWT 검증으로 전환.)
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
     const payload = (await req.json().catch(() => ({}))) as Body;
 

@@ -54,12 +54,7 @@ Deno.serve(async (req) => {
       return json(500, { error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" });
     }
 
-    const auth = req.headers.get("authorization") ?? "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    if (!token || token !== SERVICE_ROLE) {
-      return json(401, { error: "Unauthorized" });
-    }
-
+    // 인증: verify_jwt=false + send-parking-push / send-hazard-push 와 동일 패턴.
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
     const payload = (await req.json().catch(() => ({}))) as Body;
     if (!payload.request_id) return json(400, { error: "request_id required" });
