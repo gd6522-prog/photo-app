@@ -77,6 +77,9 @@ export default function TabsLayout() {
       <Tabs.Screen name="hazard-reports" options={{ href: null }} />
       <Tabs.Screen name="attendance-admin" options={{ href: null }} />
       <Tabs.Screen name="explore" options={{ href: null }} />
+      <Tabs.Screen name="urgent-dispatch" options={{ href: null }} />
+      <Tabs.Screen name="picking-cell" options={{ href: null }} />
+      <Tabs.Screen name="stale-stock" options={{ href: null }} />
     </Tabs>
   );
 }

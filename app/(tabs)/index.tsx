@@ -34,6 +34,7 @@ import { AdminRole, getAdminRole, getPendingCount } from "../../src/lib/admin";
 import { useAuth } from "../../src/lib/auth";
 import { SUPABASE_ANON_KEY, SUPABASE_URL, supabase } from "../../src/lib/supabase";
 import { getTodayTempWorkPart } from "../../src/lib/tempWorkPart";
+import { getWorkerPendingCount, isZoneWorkPart } from "../../src/lib/worker";
 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { searchStores } from "../../src/lib/storeMap";
@@ -450,6 +451,8 @@ export default function MainMenu() {
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [loadingAdmin, setLoadingAdmin] = useState(true);
   const isAdmin = adminRole !== null;
+  const [workerPendingCount, setWorkerPendingCount] = useState<number>(0);
+  const [workerMenuOpen, setWorkerMenuOpen] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [displayName, setDisplayName] = useState<string>("");
@@ -752,6 +755,22 @@ export default function MainMenu() {
     if (isDriverUser) loadCarData(selectedWorkDate);
   }, [selectedWorkDate, isDriverUser, loadCarData]);
 
+  // 일반 작업자(존 작업자) 메인 카드 배지 = 미회신 긴급출고 개수
+  const loadWorkerPending = useCallback(async () => {
+    if (isAdmin || !isZoneWorkPart(workPart) || !myUserId) {
+      setWorkerPendingCount(0);
+      return;
+    }
+    try {
+      const c = await getWorkerPendingCount(workPart, myUserId);
+      setWorkerPendingCount(c);
+    } catch {
+      setWorkerPendingCount(0);
+    }
+  }, [isAdmin, workPart, myUserId]);
+
+  useEffect(() => { loadWorkerPending(); }, [loadWorkerPending]);
+
   useEffect(() => {
     if (Platform.OS !== "android") return;
     if (!reportOpen) { setReportKeyboardHeight(0); return; }
@@ -764,11 +783,12 @@ export default function MainMenu() {
     useCallback(() => {
       loadAdmin();
       loadProfileName();
+      loadWorkerPending();
       const carNo = workPart === "기사" ? (selectedCarNo || "") : "";
       loadAttendanceForDate(selectedWorkDate, carNo);
       loadCarData(selectedWorkDate);
       return () => {};
-    }, [loadAdmin, loadAttendanceForDate, loadProfileName, loadCarData, selectedWorkDate, workPart, selectedCarNo])
+    }, [loadAdmin, loadAttendanceForDate, loadProfileName, loadCarData, loadWorkerPending, selectedWorkDate, workPart, selectedCarNo])
   );
 
   const ensureTemporaryWorkerReady = () => {
@@ -1431,6 +1451,10 @@ export default function MainMenu() {
   };
 
   const approveRowVisible = useMemo(() => !loadingAdmin && isAdmin, [loadingAdmin, isAdmin]);
+  const workerCardVisible = useMemo(
+    () => !loadingAdmin && !isAdmin && isZoneWorkPart(workPart),
+    [loadingAdmin, isAdmin, workPart]
+  );
   const isDriverUser = useMemo(() => workPart === "기사", [workPart]);
 
   // 내 호차 자동 선택
@@ -1735,6 +1759,28 @@ export default function MainMenu() {
               </Pressable>
             )}
 
+            {/* ── 일반 작업자(존 파트) 현장 작업 ── */}
+            {workerCardVisible && (
+              <Pressable
+                onPress={() => setWorkerMenuOpen(true)}
+                disabled={busy}
+                style={[styles.approveCard, busy && { opacity: 0.6 }]}
+              >
+                <View style={styles.approveCardLeft}>
+                  <View style={styles.approveCardIcon}>
+                    <Ionicons name="briefcase" size={18} color="#fff" />
+                  </View>
+                  <View>
+                    <Text style={styles.approveCardTitle}>현장 작업</Text>
+                    <Text style={styles.approveCardSub}>긴급출고 · 피킹셀 조정 · 체화재고 확인</Text>
+                  </View>
+                </View>
+                <View style={[styles.approveCardBadge, workerPendingCount > 0 ? styles.approveCardBadgeHot : styles.approveCardBadgeIdle]}>
+                  <Text style={[styles.approveCardBadgeText, workerPendingCount > 0 && { color: "#fff" }]}>{workerPendingCount}</Text>
+                </View>
+              </Pressable>
+            )}
+
             {/* ── 기능 버튼 그리드 ── */}
             <View style={styles.actionGrid}>
               <Pressable onPress={goUpload} disabled={busy} style={[styles.actionCell, styles.actionCellPrimary, busy && { opacity: 0.6 }]}>
@@ -1773,6 +1819,74 @@ export default function MainMenu() {
           </View>
         </Pressable>
       </ScrollView>
+
+      {/* 현장 작업(일반 작업자) 메뉴 모달 */}
+      <Modal visible={workerMenuOpen} transparent animationType="fade" onRequestClose={() => setWorkerMenuOpen(false)}>
+        <Pressable style={styles.backdropFill} onPress={() => setWorkerMenuOpen(false)} />
+        <View style={styles.modalCenterWrap}>
+          <View style={[styles.modalBox, { minWidth: 280 }]}>
+            <View style={[styles.modalInner, { gap: 12 }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <Ionicons name="briefcase-outline" size={18} color={THEME.text} />
+                <Text style={styles.modalTitle}>현장 작업</Text>
+              </View>
+
+              <Pressable
+                onPress={() => { setWorkerMenuOpen(false); setTimeout(() => router.push("/(tabs)/urgent-dispatch"), 180); }}
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 12,
+                  backgroundColor: pressed ? THEME.orangeSoft : THEME.soft,
+                  borderWidth: 1, borderColor: THEME.orangeBorder,
+                })}
+              >
+                <MaterialCommunityIcons name="alert-decagram-outline" size={22} color={THEME.orange} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", fontSize: 15, color: THEME.text }}>긴급출고</Text>
+                  <Text style={{ fontSize: 12, color: THEME.subtext, marginTop: 2 }}>공지 확인 및 사진 회신</Text>
+                </View>
+                {workerPendingCount > 0 && (
+                  <View style={{ minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6, backgroundColor: "#EF4444", alignItems: "center", justifyContent: "center" }}>
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "800" }}>{workerPendingCount}</Text>
+                  </View>
+                )}
+                <Ionicons name="chevron-forward" size={16} color={THEME.muted} />
+              </Pressable>
+
+              <Pressable
+                onPress={() => { setWorkerMenuOpen(false); setTimeout(() => router.push("/(tabs)/picking-cell"), 180); }}
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 12,
+                  backgroundColor: pressed ? "#EFF6FF" : THEME.soft,
+                  borderWidth: 1, borderColor: THEME.border,
+                })}
+              >
+                <MaterialCommunityIcons name="swap-horizontal" size={22} color="#2563EB" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", fontSize: 15, color: THEME.text }}>피킹셀 조정</Text>
+                  <Text style={{ fontSize: 12, color: THEME.subtext, marginTop: 2 }}>피킹셀 변경 요청 작성</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={THEME.muted} />
+              </Pressable>
+
+              <Pressable
+                onPress={() => { setWorkerMenuOpen(false); setTimeout(() => router.push("/(tabs)/stale-stock"), 180); }}
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 12,
+                  backgroundColor: pressed ? "#F0FDF4" : THEME.soft,
+                  borderWidth: 1, borderColor: THEME.border,
+                })}
+              >
+                <MaterialCommunityIcons name="timer-sand" size={22} color="#16A34A" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontWeight: "700", fontSize: 15, color: THEME.text }}>체화재고 확인</Text>
+                  <Text style={{ fontSize: 12, color: THEME.subtext, marginTop: 2 }}>출고기준미달 소비기한·사진 회신</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={THEME.muted} />
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 위험요인 메뉴 모달 */}
       <Modal visible={hazardMenuOpen} transparent animationType="fade" onRequestClose={() => setHazardMenuOpen(false)}>

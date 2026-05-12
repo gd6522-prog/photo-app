@@ -9,6 +9,8 @@ export const WORK_PART_OPTIONS: Option[] = [
   { label: "경량존", value: "경량존" },
   { label: "이형존", value: "이형존" },
   { label: "담배존", value: "담배존" },
+  { label: "공병", value: "공병" },
+  { label: "지게차", value: "지게차" },
   { label: "관리자", value: "관리자" },
   { label: "기사", value: "기사" },
 ];

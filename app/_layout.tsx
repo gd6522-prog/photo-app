@@ -108,6 +108,8 @@ function AuthGate() {
       const data = response?.notification?.request?.content?.data as { type?: string } | undefined;
       if (data?.type === "parking_request_new") {
         setPendingNavTarget("/(tabs)/approve");
+      } else if (data?.type === "urgent_dispatch_new") {
+        setPendingNavTarget("/(tabs)/urgent-dispatch");
       }
     };
 
