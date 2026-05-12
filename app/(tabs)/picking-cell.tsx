@@ -64,6 +64,7 @@ export default function PickingCellScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [recent, setRecent] = useState<any[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [lookup, setLookup] = useState<LookupState>({ status: "idle" });
   // 사용자가 자동 채움 이후 수동으로 상품코드/상품명 수정했으면, 셀 재조회로 덮어쓰지 않도록
@@ -177,6 +178,39 @@ export default function PickingCellScreen() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const onDeleteRecent = (r: { id: string; cell_before: string; cell_after: string; status: string }) => {
+    if (r.status !== "pending") {
+      Alert.alert("삭제 불가", "이미 관리자가 처리한 요청은 삭제할 수 없습니다.");
+      return;
+    }
+    Alert.alert(
+      "요청 삭제",
+      `${r.cell_before} → ${r.cell_after} 요청을 삭제할까요?`,
+      [
+        { text: "취소", style: "cancel" },
+        {
+          text: "삭제", style: "destructive", onPress: async () => {
+            setDeletingId(r.id);
+            try {
+              const { error } = await supabase
+                .from("picking_cell_change_requests")
+                .delete()
+                .eq("id", r.id)
+                .eq("status", "pending");
+              if (error) {
+                Alert.alert("삭제 실패", error.message);
+                return;
+              }
+              await loadRecent();
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const statusLabel = (s: string) =>
@@ -309,6 +343,26 @@ export default function PickingCellScreen() {
                   <View style={[styles.statusPill, { borderColor: statusColor(r.status) }]}>
                     <Text style={[styles.statusPillText, { color: statusColor(r.status) }]}>{statusLabel(r.status)}</Text>
                   </View>
+                  {r.status === "pending" && (
+                    <Pressable
+                      onPress={() => onDeleteRecent(r)}
+                      disabled={deletingId === r.id}
+                      hitSlop={8}
+                      style={({ pressed }) => [
+                        styles.deleteBtn,
+                        (pressed || deletingId === r.id) && { opacity: 0.5 },
+                      ]}
+                    >
+                      {deletingId === r.id ? (
+                        <ActivityIndicator size="small" color={THEME.red} />
+                      ) : (
+                        <>
+                          <Ionicons name="trash-outline" size={14} color={THEME.red} />
+                          <Text style={styles.deleteBtnText}>삭제</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  )}
                 </View>
                 <Text style={styles.recentMeta}>{r.product_code}{r.product_name ? ` · ${r.product_name}` : ""}</Text>
                 {r.admin_memo ? <Text style={styles.recentMemo}>관리자 메모: {r.admin_memo}</Text> : null}
@@ -402,4 +456,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   statusPillText: { fontSize: 11, fontWeight: "800" },
+  deleteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    marginLeft: "auto",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    backgroundColor: "#FEF2F2",
+  },
+  deleteBtnText: { fontSize: 11, fontWeight: "800", color: "#DC2626" },
 });
