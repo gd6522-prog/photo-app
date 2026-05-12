@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { uploadWorkerPhoto } from "../../src/lib/photoUpload";
 import { supabase } from "../../src/lib/supabase";
+import { useKeyboardPadding } from "../../src/lib/useKeyboardPadding";
 
 const DRIDO_API_BASE = "https://dridolabs.com";
 
@@ -72,6 +73,7 @@ const kstToday = () => {
 export default function StaleStockScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const kbPad = useKeyboardPadding();
 
   const [userId, setUserId] = useState<string | null>(null);
   const [workPart, setWorkPart] = useState<string>("");
@@ -237,7 +239,7 @@ export default function StaleStockScreen() {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 + kbPad }} keyboardShouldPersistTaps="handled">
           <Text style={styles.sectionTitle}>오늘 출고기준미달 상품</Text>
           {loadingItems ? (
             <View style={{ paddingVertical: 20, alignItems: "center" }}><ActivityIndicator /></View>

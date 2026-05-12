@@ -24,6 +24,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { supabase } from "../../src/lib/supabase";
+import { useKeyboardPadding } from "../../src/lib/useKeyboardPadding";
 
 const DRIDO_API_BASE = "https://dridolabs.com";
 
@@ -53,6 +54,7 @@ type LookupState =
 export default function PickingCellScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const kbPad = useKeyboardPadding();
 
   const [userId, setUserId] = useState<string | null>(null);
   const [workPart, setWorkPart] = useState<string>("");
@@ -264,7 +266,7 @@ export default function PickingCellScreen() {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 + kbPad }} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
             <Text style={styles.label}>변경 전 피킹셀</Text>
             <TextInput

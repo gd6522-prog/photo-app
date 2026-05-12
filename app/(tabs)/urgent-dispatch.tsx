@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { uploadWorkerPhoto } from "../../src/lib/photoUpload";
 import { supabase } from "../../src/lib/supabase";
+import { useKeyboardPadding } from "../../src/lib/useKeyboardPadding";
 import { fetchMyReplies, fetchUrgentDispatches, UrgentDispatchReplyRow, UrgentDispatchRow } from "../../src/lib/worker";
 
 const THEME = {
@@ -47,6 +48,7 @@ type PhotoUrlMap = Record<string, string>;
 export default function UrgentDispatchScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const kbPad = useKeyboardPadding();
 
   const [userId, setUserId] = useState<string | null>(null);
   const [workPart, setWorkPart] = useState<string>("");
@@ -206,7 +208,7 @@ export default function UrgentDispatchScreen() {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 48 + kbPad }} keyboardShouldPersistTaps="handled">
           {loading ? (
             <View style={{ paddingVertical: 40, alignItems: "center" }}>
               <ActivityIndicator />
