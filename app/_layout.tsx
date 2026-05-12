@@ -110,6 +110,8 @@ function AuthGate() {
         setPendingNavTarget("/(tabs)/approve");
       } else if (data?.type === "urgent_dispatch_new") {
         setPendingNavTarget("/(tabs)/urgent-dispatch");
+      } else if (data?.type === "picking_cell_request_result") {
+        setPendingNavTarget("/(tabs)/picking-cell");
       }
     };
 
