@@ -72,14 +72,16 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* 탭에는 숨기되 라우팅은 되는 화면들 */}
-      <Tabs.Screen name="approve" options={{ href: null }} />
-      <Tabs.Screen name="hazard-reports" options={{ href: null }} />
-      <Tabs.Screen name="attendance-admin" options={{ href: null }} />
-      <Tabs.Screen name="explore" options={{ href: null }} />
-      <Tabs.Screen name="urgent-dispatch" options={{ href: null }} />
-      <Tabs.Screen name="picking-cell" options={{ href: null }} />
-      <Tabs.Screen name="stale-stock" options={{ href: null }} />
+      {/* 탭에는 숨기되 라우팅은 되는 화면들.
+          unmountOnBlur=true: 다른 화면으로 이동/뒤로가기 후 다시 들어오면 컴포넌트가
+          새로 마운트되어 입력값·작성중 사진·드롭다운 등이 초기 상태로 돌아온다. */}
+      <Tabs.Screen name="approve" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="hazard-reports" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="attendance-admin" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="explore" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="urgent-dispatch" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="picking-cell" options={{ href: null, unmountOnBlur: true } as any} />
+      <Tabs.Screen name="stale-stock" options={{ href: null, unmountOnBlur: true } as any} />
     </Tabs>
   );
 }
