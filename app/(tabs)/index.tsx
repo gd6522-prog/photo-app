@@ -2395,14 +2395,12 @@ const styles = StyleSheet.create({
   dateNavText: { fontSize: 18, fontWeight: "800", color: THEME.text, letterSpacing: -0.3 },
 
   driverList: { gap: 8 },
-  driverRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4 },
   driverAvatar: {
     width: 30, height: 30, borderRadius: 10,
     backgroundColor: THEME.soft, borderWidth: 1, borderColor: THEME.border,
     alignItems: "center", justifyContent: "center",
   },
   driverAvatarText: { fontSize: 13, fontWeight: "800", color: THEME.subtext },
-  driverName: { fontSize: 14, fontWeight: "700", color: THEME.text },
   driverTime: { fontSize: 12, fontWeight: "700", color: THEME.subtext },
   driverTimeSep: { fontSize: 12, color: THEME.muted, marginHorizontal: 2 },
 

@@ -1542,7 +1542,7 @@ export default function UploadScreen() {
                 </Pressable>
               </View>
               <View style={{ padding: 14, gap: 10 }}>
-                <Text style={styles.modalDesc}>회원가입 작업파트 목록에서 "기사"만 제외한 옵션입니다.</Text>
+                <Text style={styles.modalDesc}>회원가입 작업파트 목록에서 &quot;기사&quot;만 제외한 옵션입니다.</Text>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
                   {workPartOptions.map((o) => {
                     const selected = selectedWorkPartInModal === o.value;
